@@ -8,6 +8,8 @@ import { useStore } from '../store/useStore.js'
 import { useGym, rolesIn } from './useGym.js'
 import { PRODUCT } from './config.js'
 import { t } from '../lib/i18n.js'
+import Owner from './Owner.jsx'
+import Trainer from './Trainer.jsx'
 
 // Loads the roles for the signed-in account when they are not this account's, or not loaded yet.
 function useGymRoles() {
@@ -45,17 +47,13 @@ export function GymHome() {
   )
 }
 
-// Owner and trainer screens arrive with their own views; until then the guarded routes exist so
-// the guard is what decides.
-const Pending = () => <p className="muted pad">{t('Coming soon.')}</p>
-
 export function gymRoutes() {
   if (!PRODUCT) return null
   return (
     <>
       <Route path="/gym" element={<GymHome />} />
-      <Route path="/gym/owner/:gymId" element={<RequireRole role="owner"><Pending /></RequireRole>} />
-      <Route path="/gym/trainer" element={<RequireRole role="trainer"><Pending /></RequireRole>} />
+      <Route path="/gym/owner/:gymId" element={<RequireRole role="owner"><Owner /></RequireRole>} />
+      <Route path="/gym/trainer" element={<RequireRole role="trainer"><Trainer /></RequireRole>} />
     </>
   )
 }
