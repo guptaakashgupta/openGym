@@ -1,0 +1,23 @@
+# Disposable PostgreSQL for the pilot storage/platform tests. Test data only.
+#   docker compose -p pilot-tests -f deploy/pilot/compose.test.yml up -d --wait
+#   export TEST_DATABASE_URL=postgres://pilot_test:pilot_test@127.0.0.1:55432/pilot_test
+#   docker compose -p pilot-tests -f deploy/pilot/compose.test.yml down -v   # discard
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: pilot_test
+      POSTGRES_USER: pilot_test
+      POSTGRES_PASSWORD: pilot_test
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - pilot-test-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pilot_test -d pilot_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pilot-test-pg:
