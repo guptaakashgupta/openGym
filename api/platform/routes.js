@@ -9,6 +9,7 @@ import { endMembership, getMembership } from './memberships.js';
 import { errorAnswer, notFound, badRequest } from './errors.js';
 import { createInvitation, listInvitations, revokeInvitation, previewInvitation, redeemInvitation } from './invitations.js';
 import { projectWorkouts } from './workout-projection.js';
+import { createProposal, listProposals, getProposal, declineProposal } from './proposals.js';
 
 const ID = '[A-Za-z0-9_-]{1,64}';
 const TEMPLATES = [
@@ -24,6 +25,10 @@ const TEMPLATES = [
   ['DELETE', '/api/platform/gyms/{gymId}/invitations/{invitationId}'],
   ['POST', '/api/platform/invitations/preview'],
   ['POST', '/api/platform/invitations/redeem'],
+  ['POST', '/api/platform/clients/{membershipId}/proposals'],
+  ['GET', '/api/platform/proposals'],
+  ['GET', '/api/platform/proposals/{versionId}'],
+  ['POST', '/api/platform/proposals/{versionId}/decline'],
 ];
 const tokenOf = body => (typeof body.token === 'string' && body.token.length <= 200 ? body.token : '');
 const compile = path => new RegExp('^' + path.replace(/\{(\w+)\}/g, (_, n) => `(?<${n}>${ID})`) + '$');
@@ -105,6 +110,20 @@ export function platformRoutes({ db, json, readBody, readSession, audit }) {
     },
 
     'POST /api/platform/invitations/preview': async ({ user, body }) => previewInvitation(db, tokenOf(body), user.id),
+
+    'POST /api/platform/clients/{membershipId}/proposals': async ({ req, user, params, body }) => {
+      const previousVersionId = typeof body.previousVersionId === 'string' ? body.previousVersionId : null;
+      const proposal = await createProposal(db, { trainerUserId: user.id, memberMembershipId: params.membershipId, bundle: body.bundle, previousVersionId });
+      audit(req, 'gym.proposal.create', { user, msg: `${proposal.gymId} ${proposal.id}` });
+      return { proposal };
+    },
+    'GET /api/platform/proposals': async ({ user }) => listProposals(db, user.id),
+    'GET /api/platform/proposals/{versionId}': async ({ user, params }) => getProposal(db, user.id, params.versionId),
+    'POST /api/platform/proposals/{versionId}/decline': async ({ req, user, params }) => {
+      const r = await declineProposal(db, user.id, params.versionId);
+      audit(req, 'gym.proposal.decline', { user, msg: params.versionId });
+      return r;
+    },
 
     'POST /api/platform/invitations/redeem': async ({ req, user, body }) => {
       const r = await redeemInvitation(db, { token: tokenOf(body), userId: user.id });

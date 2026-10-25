@@ -8,6 +8,7 @@
    such transactions from deadlocking each other. */
 import { newId, inTx } from './organisations.js';
 import { snapshotSeen } from './workout-visibility.js';
+import { invalidatePendingOfMembership } from './proposal-invalidation.js';
 
 export const ROLES = ['owner', 'trainer', 'member'];
 
@@ -54,6 +55,7 @@ export function endMembership(db, { gymId, membershipId }) {
     await client.query(
       'UPDATE trainer_assignments SET ended_at = now() WHERE ended_at IS NULL AND (member_membership_id = $1 OR trainer_membership_id = $1)',
       [membershipId]);
+    await invalidatePendingOfMembership(client, membershipId);
     return fromRow(ended.rows[0]);
   });
 }
