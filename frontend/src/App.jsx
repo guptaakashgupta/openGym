@@ -56,6 +56,9 @@ import CoachChat from './views/CoachChat.jsx'
 import Measurements from './views/Measurements.jsx'
 import CoachIntake from './views/CoachIntake.jsx'
 import CoachSetup from './views/CoachSetup.jsx'
+// The gym pilot's screens (product build only): one place they join the app.
+import { PRODUCT } from './platform/config.js'
+import { gymRoutes } from './platform/Routes.jsx'
 
 // last known scrollY per route, so back-navigation can put the page where it was
 const scrollPositions = new Map()
@@ -267,7 +270,8 @@ function Shell() {
       <Route path="/coach/intake" element={<CoachIntake />} />
       <Route path="/coach/proposal" element={<Navigate to="/coach" replace />} />
       <Route path="/coach/setup" element={<CoachSetup />} />
-      <Route path="/admin" element={user?.admin ? <Admin /> : <Navigate to="/home" replace />} />
+      <Route path="/admin" element={user?.admin && !PRODUCT ? <Admin /> : <Navigate to="/home" replace />} />
+      {PRODUCT && gymRoutes()}
       <Route path="*" element={<Navigate to="/home" replace />} />
     </Routes>
   ))
