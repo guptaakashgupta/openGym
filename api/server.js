@@ -30,13 +30,12 @@ import {
   listPasskeys, addPasskeyRecord, renamePasskeyRecord, removePasskeyRecord, passkeyRemovalRefused, MAX_PASSKEYS,
   transportsOf,
 } from './passkeys-store.js';
-import { createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks } from './device-link.js';
 import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE } from './media.js';
 import { effectiveRoutineId } from './queue.js';
 import { prepareWrite, validateWrite, forClient, records } from './state/prepare-write.js';
 import { atomicWrite as durableWrite } from './durable.js';
 import { loadConfig } from './platform/config.js';
-import { createStateStore, createIdentityStore } from './storage/index.js';
+import { createStateStore, createIdentityStore, createTransientStore } from './storage/index.js';
 import { IdentityConflictError } from './storage/identity.js';
 import { StateUnreadableError } from './storage/state-file.js';
 import { StateUnsupportedError } from './storage/state-postgres.js';
@@ -123,9 +122,11 @@ const lock = f => { try { fs.chmodSync(path.join(DATA, f), 0o600); } catch { /* 
 ['secret', 'db.json', 'coach.json'].forEach(lock);
 
 /* ---------- secret + db ---------- */
+// Product mode signs with the managed SESSION_SECRET (platform/config.js), the same in every API
+// process; file mode keeps the secret it generates into DATA_DIR on first boot.
 const secretFile = path.join(DATA, 'secret');
-if (!fs.existsSync(secretFile)) fs.writeFileSync(secretFile, crypto.randomBytes(32).toString('hex'), { mode: 0o600 });
-const SECRET = fs.readFileSync(secretFile, 'utf8').trim();
+if (CONFIG.mode === 'file' && !fs.existsSync(secretFile)) fs.writeFileSync(secretFile, crypto.randomBytes(32).toString('hex'), { mode: 0o600 });
+const SECRET = CONFIG.mode === 'product' ? CONFIG.sessionSecret : fs.readFileSync(secretFile, 'utf8').trim();
 
 const dbFile = path.join(DATA, 'db.json');
 // Every account, passkey and invite. Only a missing file starts empty: an unreadable one (a write
@@ -162,6 +163,14 @@ db.deviceLinks = db.deviceLinks || [];   // unused one-time device links, hashed
 // Accounts and passkey credentials (storage/identity-*.js): db.json's arrays in file mode,
 // PostgreSQL in product mode.
 const IDENTITY = createIdentityStore(CONFIG, { db, save: () => saveDb(), pool: POOL });
+// WebAuthn challenges, pairing codes and device links (storage/transient-*.js).
+const TRANSIENT = createTransientStore(CONFIG, { db, save: () => saveDb(), pool: POOL });
+// Every way into the account that is still waiting to be used: an unredeemed pairing code is a
+// session-in-waiting, an unused device link a passkey-in-waiting. They go when sessions end.
+async function dropWaysIn(uid) {
+  await TRANSIENT.dropPairings(uid);
+  await TRANSIENT.dropDeviceLinks(uid);
+}
 const isAdmin = user => !!user && (user.admin === true || ADMIN_UIDS.includes(user.id));
 // One owner per instance, any number of admins. Admins run the place day to day (users, invites,
 // the Coach); the owner is the one admin the others cannot act on: only the owner appoints or
@@ -768,39 +777,14 @@ async function csrfOk(req, key) {
 // POST /api/device-link/options hands to anyone holding a code finished a *sign-up* instead: a
 // passkey on the owner's profile and a session for it, without using the code up, as often as
 // wanted, and past "sign out everywhere".
-const challenges = new Map(); // cid -> {kind, challenge, name?, uid?, exp}
-// POST /api/login/options is anonymous and unthrottled, and every call leaves a challenge here
-// for five minutes, so the Map has a ceiling: past it the oldest goes. A ceremony takes seconds,
-// so only a flood far beyond any real sign-in traffic reaches back far enough to cost one.
-const MAX_CHALLENGES = 20000;
-function putChallenge(data) {
-  while (challenges.size >= MAX_CHALLENGES) challenges.delete(challenges.keys().next().value);
-  const cid = crypto.randomBytes(16).toString('base64url');
-  challenges.set(cid, { ...data, exp: Date.now() + 5 * 60000 });
-  return cid;
-}
-function takeChallenge(cid) {
-  const c = challenges.get(cid);
-  challenges.delete(cid);
-  if (!c || c.exp < Date.now()) return null;
-  return c;
-}
-setInterval(() => { for (const [k, v] of challenges) if (v.exp < Date.now()) challenges.delete(k); }, 60000).unref();
+// The store is storage/transient-*.js; a challenge lives five minutes and is taken once.
+const putChallenge = data => TRANSIENT.putChallenge(data);
+const takeChallenge = cid => TRANSIENT.takeChallenge(cid);
 
 // ---------- device pairing (mobile app "connect to my server", no WebAuthn ceremony) ----------
 // A passkey ceremony can't run inside the app's WebView (its origin never matches RP_ID), so the
 // app authenticates by redeeming a short code minted from an already signed-in browser tab —
-// same 5-min-TTL/one-shot shape as the WebAuthn challenge store above.
-const pairings = new Map(); // code -> {uid, exp}
-const PAIR_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I — read off a screen
-function makePairCode() {
-  let code;
-  do {
-    code = Array.from(crypto.randomBytes(8)).map(b => PAIR_CODE_ALPHABET[b % PAIR_CODE_ALPHABET.length]).join('');
-  } while (pairings.has(code));
-  return code;
-}
-setInterval(() => { for (const [k, v] of pairings) if (v.exp < Date.now()) pairings.delete(k); }, 60000).unref();
+// same 5-min-TTL/one-shot shape as the WebAuthn challenge store above (storage/transient-*.js).
 
 /* ---------- helpers ---------- */
 function json(res, code, obj, extraHeaders) {
@@ -1218,8 +1202,7 @@ async function setPassword(user, h) {
     delete u.pwReset;
     u.sv = sessionVersion(u) + 1;
   });
-  for (const [k, v] of pairings) if (v.uid === user.id) pairings.delete(k);
-  dropDeviceLinks(db, user.id);
+  await dropWaysIn(user.id);
   saveDb();
   return next;
 }
@@ -1230,7 +1213,7 @@ async function setPassword(user, h) {
 // outlives "sign out everywhere". Same ceremony as /api/login/verify, and the credential has
 // to belong to this account.
 async function passkeyStepUp(user, body) {
-  const c = takeChallenge(body.cid);
+  const c = await takeChallenge(body.cid);
   const found = c?.kind === 'login' && await IDENTITY.findCredential(String(body.credential?.id || ''));
   const cred = found && found.userId === user.id ? found : null;
   if (!cred) return false;
@@ -1350,7 +1333,8 @@ async function removeAccount(u) {
   // The account and its passkeys (and, in product mode, its training history) in one write.
   await IDENTITY.deleteUser(u.id);
   db.subs = (db.subs || []).filter(x => x.userId !== u.id);
-  dropDeviceLinks(db, u.id);
+  await TRANSIENT.dropDeviceLinks(u.id);
+  await TRANSIENT.dropPairings(u.id);
   presence.delete(u.id);
   // The training history and any Coach credential of theirs, both outside db.json.
   try { fs.unlinkSync(stateFile(u.id)); } catch { /* already gone */ }
@@ -1624,8 +1608,7 @@ const passwordRoutes = {
       });
     } catch (e) { if (e instanceof IdentityConflictError) return nameInUse(); throw e; }
     if (!u) return json(res, 404, { error: 'no such user' });
-    for (const [k, v] of pairings) if (v.uid === u.id) pairings.delete(k);
-    dropDeviceLinks(db, u.id);
+    await dropWaysIn(u.id);
     presence.delete(u.id);
     saveDb();
     audit(req, 'admin.password.reset', { user: admin, target: u });
@@ -1674,8 +1657,7 @@ const passwordRoutes = {
       });
     } catch (e) { if (e instanceof IdentityConflictError) return taken(); throw e; }
     if (used || !changed) return invalid();
-    for (const [k2, v] of pairings) if (v.uid === user.id) pairings.delete(k2);
-    dropDeviceLinks(db, user.id);
+    await dropWaysIn(user.id);
     saveDb();
     ACCOUNT_FAILS.clear(acctKey(user));
     audit(req, 'auth.password.reset', { user: changed });
@@ -1799,7 +1781,7 @@ const passkeyRoutes = {
     if (!(await stillSignedIn(req, user))) return notSignedIn(res);
     if (proof === 'passkey') saveDb();   // the confirming passkey's counter and last use
     const options = await moreOptions(user);
-    const cid = putChallenge({ challenge: options.challenge, uid: user.id, kind: 'add', sv: sessionVersion(user), proof });
+    const cid = await putChallenge({ challenge: options.challenge, uid: user.id, kind: 'add', sv: sessionVersion(user), proof });
     json(res, 200, { cid, options });
   },
 
@@ -1807,7 +1789,7 @@ const passkeyRoutes = {
     const user = await readSession(req);
     if (!user) return notSignedIn(res);
     const body = await readBody(req);
-    const c = takeChallenge(text(body.cid));
+    const c = await takeChallenge(text(body.cid));
     if (!c || c.kind !== 'add' || c.uid !== user.id) {
       audit(req, 'auth.passkey.fail', { ok: false, user, msg: 'challenge-expired' });
       return json(res, 400, { error: 'challenge expired, try again', code: 'challenge-expired' });
@@ -1858,7 +1840,7 @@ const passkeyRoutes = {
     const r = await IDENTITY.removeCredentialChecked(user.id, id,
       (creds, now) => passkeyRemovalRefused({ creds }, user.id, id, passwordWayIn(now) ? 1 : 0));
     if (r.error) return refuse(r);
-    dropDeviceLinks(db, user.id);
+    await TRANSIENT.dropDeviceLinks(user.id);
     saveDb();
     audit(req, 'auth.passkey.remove', { user, msg: r.row.name || null });
     json(res, 200, { ok: true, ...(await passkeyState(user)) });
@@ -1874,8 +1856,7 @@ const passkeyRoutes = {
     const proof = await proveOwner(req, res, user, body, 'device-link');
     if (!proof) return;
     if (!(await stillSignedIn(req, user))) return notSignedIn(res);
-    const { code, link } = createDeviceLink(db, user.id);
-    saveDb();
+    const { code, link } = await TRANSIENT.createDeviceLink(user.id);
     audit(req, 'auth.link.create', { user, msg: proof });
     json(res, 200, { code, expires: link.exp });
   },
@@ -1892,7 +1873,7 @@ const passkeyRoutes = {
   'POST /api/device-link/options': async (req, res) => {
     const body = await readBody(req);
     if (addressPaused(req, res, 'link')) return;
-    const link = findDeviceLink(db, text(body.code));
+    const link = await TRANSIENT.findDeviceLink(text(body.code));
     if (!link) {
       strikeAddress(req, 'link');
       audit(req, 'auth.link.fail', { ok: false, msg: 'link-invalid' });
@@ -1905,7 +1886,7 @@ const passkeyRoutes = {
     }
     if (await passkeyCount(user) >= MAX_PASSKEYS) return json(res, 409, LIMIT);
     const options = await moreOptions(user);
-    const cid = putChallenge({ challenge: options.challenge, uid: user.id, kind: 'link', lh: link.h });
+    const cid = await putChallenge({ challenge: options.challenge, uid: user.id, kind: 'link', lh: link.h });
     json(res, 200, { cid, options, id: user.id, name: user.name });
   },
 
@@ -1916,8 +1897,8 @@ const passkeyRoutes = {
     const body = await readBody(req);
     if (addressPaused(req, res, 'link')) return;
     const code = text(body.code);
-    const c = takeChallenge(text(body.cid));
-    const link = findDeviceLink(db, code);
+    const c = await takeChallenge(text(body.cid));
+    const link = await TRANSIENT.findDeviceLink(code);
     if (!link) {
       strikeAddress(req, 'link');
       audit(req, 'auth.link.fail', { ok: false, msg: 'link-invalid' });
@@ -1933,23 +1914,20 @@ const passkeyRoutes = {
     // Everything above awaited: the code may have been used, replaced or dropped since (a sign-out
     // everywhere, a new password, a disable), and the profile may be gone or locked.
     const user = await IDENTITY.getUser(link.userId);
-    if (findDeviceLink(db, code) !== link || !user || user.disabled) {
+    // Burned here, before the passkey is stored: of two requests racing with one code (on any
+    // process) only the one whose burn removed it gets further.
+    if (!user || user.disabled || !(await TRANSIENT.burnDeviceLink(link))) {
       audit(req, 'auth.link.fail', { ok: false, uid: link.userId, msg: 'link-invalid' });
       return json(res, 400, LINK_INVALID);
     }
-    // Burned before the await that stores the passkey, so of two requests racing with one code only
-    // one gets this far (the code is then gone whatever happens next).
-    burnDeviceLink(db, link);
-    saveDb();
     const added = await storePasskey(user.id, cred, { lastUsed: new Date().toISOString() });
     if (added.error) {
       // Refused (the limit, a passkey already registered): the code is not spent, as upstream,
       // unless a newer code for the profile has replaced it meanwhile.
-      if (!db.deviceLinks.some(l => l.userId === link.userId)) { db.deviceLinks.push(link); saveDb(); }
+      await TRANSIENT.restoreDeviceLink(link);
       audit(req, 'auth.link.fail', { ok: false, user, msg: added.code });
       return json(res, 409, { error: added.error, code: added.code });
     }
-    saveDb();
     audit(req, 'auth.link.ok', { user, msg: added.row.name || null });
     json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': sessionCookie(user) });
   }
@@ -2193,13 +2171,13 @@ const routes = {
       authenticatorSelection: { residentKey: 'required', userVerification: 'preferred' },
       excludeCredentials: []
     });
-    const cid = putChallenge({ kind: 'register', challenge: options.challenge, name, uid, code });
+    const cid = await putChallenge({ kind: 'register', challenge: options.challenge, name, uid, code });
     json(res, 200, { cid, options });
   },
 
   'POST /api/register/verify': async (req, res) => {
     const body = await readBody(req);
-    const c = takeChallenge(body.cid);
+    const c = await takeChallenge(body.cid);
     if (!c || c.kind !== 'register' || !c.uid) {
       auditFail(req, 'auth.register.fail', { ok: false, msg: 'challenge-expired' });
       return json(res, 400, { error: 'challenge expired, try again', code: 'challenge-expired' });
@@ -2264,13 +2242,13 @@ const routes = {
     const options = await generateAuthenticationOptions({
       rpID: RP_ID, userVerification: 'preferred', allowCredentials: []
     });
-    const cid = putChallenge({ kind: 'login', challenge: options.challenge });
+    const cid = await putChallenge({ kind: 'login', challenge: options.challenge });
     json(res, 200, { cid, options });
   },
 
   'POST /api/login/verify': async (req, res) => {
     const body = await readBody(req);
-    const c = takeChallenge(body.cid);
+    const c = await takeChallenge(body.cid);
     if (c?.kind !== 'login') {
       auditFail(req, 'auth.login.fail', { ok: false, msg: 'challenge-expired' });
       return json(res, 400, { error: 'challenge expired, try again', code: 'challenge-expired' });
@@ -2338,8 +2316,7 @@ const routes = {
     await IDENTITY.updateUser(user.id, u => { u.sv = sessionVersion(u) + 1; });
     // An unredeemed pairing code is a session-in-waiting for this account; it goes too, and so
     // does an unused device link.
-    for (const [k, v] of pairings) if (v.uid === user.id) pairings.delete(k);
-    dropDeviceLinks(db, user.id);
+    await dropWaysIn(user.id);
     saveDb();
     audit(req, 'auth.logout.all', { user });
     json(res, 200, { ok: true }, { 'Set-Cookie': clearCookie });
@@ -2392,10 +2369,8 @@ const routes = {
     const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     // One live code per profile: the newest is the one on screen. Keeping every code minted
-    // let one session grow this Map without limit for five minutes at a time.
-    for (const [k, v] of pairings) if (v.uid === user.id) pairings.delete(k);
-    const code = makePairCode();
-    pairings.set(code, { uid: user.id, exp: Date.now() + 5 * 60000 });
+    // let one session grow the store without limit for five minutes at a time.
+    const code = await TRANSIENT.createPairing(user.id);
     audit(req, 'auth.pair.create', { user });
     json(res, 200, { code });
   },
@@ -2405,15 +2380,14 @@ const routes = {
   'POST /api/pair/redeem': async (req, res) => {
     const body = await readBody(req);
     const code = text(body.code).trim().toUpperCase();
-    const p = pairings.get(code);
-    if (p) pairings.delete(code);
-    if (!p || p.exp < Date.now()) {
+    const uid = await TRANSIENT.redeemPairing(code);
+    if (!uid) {
       auditFail(req, 'auth.pair.fail', { ok: false, msg: 'code-invalid' });
       return json(res, 400, { error: 'invalid or expired code', code: 'pair-invalid' });
     }
-    const user = db.users.find(u => u.id === p.uid);
+    const user = await IDENTITY.getUser(uid);
     if (!user || user.disabled) {
-      audit(req, 'auth.pair.fail', { ok: false, uid: p.uid, msg: 'user-unavailable' });
+      audit(req, 'auth.pair.fail', { ok: false, uid, msg: 'user-unavailable' });
       return json(res, 400, { error: 'invalid or expired code', code: 'pair-invalid' });
     }
     audit(req, 'auth.pair.ok', { user });
@@ -2695,7 +2669,7 @@ const routes = {
     u.disabled = !!body.disabled;
     if (u.disabled) presence.delete(u.id);   // drop them off "training now" at once
     // A device link made before the lock would otherwise still be waiting when it is lifted.
-    if (u.disabled) dropDeviceLinks(db, u.id);
+    if (u.disabled) await TRANSIENT.dropDeviceLinks(u.id);
     saveDb();
     audit(req, u.disabled ? 'admin.user.disable' : 'admin.user.enable', { user: admin, target: u });
     json(res, 200, { ok: true, id: u.id, disabled: u.disabled });

@@ -74,7 +74,7 @@ test('file mode and PostgreSQL product mode answer the same sync conversation id
   url.searchParams.set('options', `-c search_path=${schema}`);
 
   const fileCall = await boot(t, {});
-  const pgCall = await boot(t, { OPENGYM_MODE: 'product', DATABASE_URL: url.toString(), SESSION_SECRET: 'p'.repeat(48) });
+  const pgCall = await boot(t, { OPENGYM_MODE: 'product', DATABASE_URL: url.toString(), SESSION_SECRET: SECRET });
 
   const fileAnswers = normalise(await conversation(fileCall));
   const pgAnswers = normalise(await conversation(pgCall));
@@ -91,7 +91,7 @@ test('product mode answers a NUL-carrying push with a 400 and keeps the stored d
   await pool.query("INSERT INTO users (id) VALUES ('u1')");
   const url = new URL(testDatabaseUrl());
   url.searchParams.set('options', `-c search_path=${schema}`);
-  const call = await boot(t, { OPENGYM_MODE: 'product', DATABASE_URL: url.toString(), SESSION_SECRET: 'p'.repeat(48) });
+  const call = await boot(t, { OPENGYM_MODE: 'product', DATABASE_URL: url.toString(), SESSION_SECRET: SECRET });
   await call('PUT', '/api/data', { state: { workouts: [{ id: 'safe' }] }, stamped: true });
   const r = await call('PUT', '/api/data', { state: { workouts: [{ id: 'x', note: 'a\u0000b' }] }, baseRev: 1, stamped: true });
   assert.equal(r.status, 400);

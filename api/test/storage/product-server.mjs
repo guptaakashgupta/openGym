@@ -1,6 +1,8 @@
 /* A real server.js in product mode against a disposable PostgreSQL schema, with the request
    helper and software passkey the upstream suites use (server-passkeys.test.js), so product tests
-   drive the same HTTP flows. `restart()` boots a second process on the same database. */
+   drive the same HTTP flows. `restart()` replaces the process; `another()` boots a second one on
+   the same database, as a second API replica would be. Sessions are signed with the managed
+   SESSION_SECRET, never a per-process file. */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -18,9 +20,10 @@ const sha = b => crypto.createHash('sha256').update(b).digest();
 
 export async function bootProduct(t, { env = {} } = {}) {
   const { pool, schema } = await testSchema(t, { migrated: true });
-  const secret = crypto.randomBytes(32).toString('hex');
+  const secret = crypto.randomBytes(32).toString('hex');   // product mode signs with this
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pilot-auth-'));
-  fs.writeFileSync(path.join(dataDir, 'secret'), secret, { mode: 0o600 });
+  // A different file secret: a session that verifies proves the managed one is in use.
+  fs.writeFileSync(path.join(dataDir, 'secret'), crypto.randomBytes(32).toString('hex'), { mode: 0o600 });
   fs.writeFileSync(path.join(dataDir, 'db.json'), JSON.stringify({ users: [], creds: [], subs: [], invites: [] }));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
   const url = new URL(testDatabaseUrl());
@@ -28,25 +31,25 @@ export async function bootProduct(t, { env = {} } = {}) {
   const databaseUrl = env.DATABASE_URL || url.toString();
 
   const h = { pool, schema, dataDir, store: postgresIdentityStore(pool), log: '' };
-  async function start() {
+  async function spawnOne() {
     const child = spawn(process.execPath, ['server.js'], {
       cwd: API, stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env, PORT: '0', DATA_DIR: dataDir, ORIGIN, RP_ID: 'localhost',
-        OPENGYM_MODE: 'product', SESSION_SECRET: 'p'.repeat(48),
+        OPENGYM_MODE: 'product', SESSION_SECRET: secret,
         PASSWORD_LOGIN: '1', TRUST_PROXY: '1', INVITE_ONLY: '', ADMIN_UIDS: '', AUDIT_LOG: '1', ...env, DATABASE_URL: databaseUrl,
       }
     });
     child.stdout.on('data', d => h.log += d);
     child.stderr.on('data', d => h.log += d);
     t.after(() => child.kill('SIGKILL'));
-    h.child = child;
-    h.api = `http://127.0.0.1:${await boundPort(child, () => h.log)}`;
+    return { child, api: `http://127.0.0.1:${await boundPort(child, () => h.log)}` };
   }
+  async function start() { Object.assign(h, await spawnOne()); }
   await start();
   h.restart = async () => { h.child.kill('SIGKILL'); await start(); };
-  h.req = async (method, p, { body, cookie, ip = '198.51.100.1', headers = {} } = {}) => {
-    const r = await fetch(`${h.api}${p}`, {
+  const reqAt = base => async (method, p, { body, cookie, ip = '198.51.100.1', headers = {} } = {}) => {
+    const r = await fetch(`${base()}${p}`, {
       method,
       headers: { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin', 'X-Forwarded-For': ip, ...(cookie ? { Cookie: cookie } : {}), ...headers },
       body: body === undefined ? undefined : JSON.stringify(body)
@@ -55,6 +58,12 @@ export async function bootProduct(t, { env = {} } = {}) {
     let parsed = null;
     try { parsed = await r.json(); } catch { /* an empty or non-JSON answer */ }
     return { status: r.status, body: parsed, cookie: setCookie ? setCookie.split(';')[0] : null };
+  };
+  h.req = reqAt(() => h.api);
+  h.another = async () => { const { api } = await spawnOne(); return reqAt(() => api); };
+  h.token = (uid, { sv = 0, ttlMs = 86400000, kind } = {}) => {
+    const payload = `${uid}:${Date.now() + ttlMs}:${sv}${kind ? ':' + kind : ''}`;
+    return payload + '.' + crypto.createHmac('sha256', secret).update(payload).digest('base64url');
   };
   h.session = (uid, sv = 0) => {
     const payload = `${uid}:${Date.now() + 86400000}:${sv}`;
