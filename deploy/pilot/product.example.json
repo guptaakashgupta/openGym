@@ -1,0 +1,11 @@
+{
+  "productName": "Example Gym",
+  "appId": "com.example.gympilot",
+  "server": "https://gym.example.com",
+  "media": { "mode": "placeholder" },
+  "source": {
+    "upstream": "https://github.com/DuarteSantos8/openGym",
+    "offerUrl": "https://source.example.com/gympilot/{version}"
+  },
+  "ios": { "enabled": false }
+}

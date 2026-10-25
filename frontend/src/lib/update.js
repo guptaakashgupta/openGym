@@ -11,9 +11,12 @@
 
 import { MOBILE } from './mobile.js'
 import { BUILTIN_PX } from './anim-quality.js'
+import { PRODUCT } from '../platform/config.js'
 
 const REPO = 'DuarteSantos8/openGym'
-const LATEST_URL = `https://api.github.com/repos/${REPO}/releases/latest`
+// The pilot product build never asks upstream for releases: it has its own distribution
+// (docs/ops/PILOT_MOBILE_RELEASE.md), and the address is left out of its bundle.
+const LATEST_URL = PRODUCT ? null : `https://api.github.com/repos/${REPO}/releases/latest`
 export const RELEASES_PAGE = `https://github.com/${REPO}/releases/latest`
 
 /**
@@ -52,6 +55,7 @@ function compareSemver(a, b) {
 let cached = null
 export function resetUpdateCheck() { cached = null }
 export async function checkForUpdate() {
+  if (PRODUCT) return null
   if (!cached) cached = fetchLatest().catch(e => { cached = null; throw e })
   return cached
 }

@@ -11,6 +11,10 @@ data/
 
 # Build output / deps
 frontend/dist/
+# The gym pilot's product build (frontend/scripts/build-pilot.mjs): its web output and the
+# generated Android identity.
+frontend/dist-pilot/
+frontend/android/pilot.properties
 node_modules/
 *.log
 .DS_Store

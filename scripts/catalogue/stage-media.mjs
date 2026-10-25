@@ -10,12 +10,41 @@
 // what may sit in the repository, a website or a self-hosted server; anything larger may only
 // ever end up inside a compiled app package, so APP_MEDIA_DIR is set by the release build alone
 // and points at the maintainer's private copy, never at anything in this repository.
+//
+//   node scripts/catalogue/stage-media.mjs <out> --manifest licensed.json
+//                                                                        a product build (frontend/scripts/build-pilot.mjs):
+//                                                                        exactly the files a licensed manifest names
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const out = path.resolve(process.argv[2] || 'frontend/dist')
+
+// A licensed manifest: { licence, source (dir, relative to the manifest), files: [{ path, sha256 }] }.
+// Every file is checked against its hash before anything is copied; one mismatch stages nothing.
+const at = process.argv.indexOf('--manifest')
+if (at >= 0) {
+  const file = path.resolve(process.argv[at + 1] || '')
+  let m
+  try { m = JSON.parse(fs.readFileSync(file, 'utf8')) } catch { console.error(`cannot read the licensed manifest ${file}`); process.exit(1) }
+  const from = path.resolve(path.dirname(file), m.source || '.')
+  const files = Array.isArray(m.files) ? m.files : []
+  for (const f of files) {
+    const src = path.resolve(from, String(f.path))
+    if (!src.startsWith(from + path.sep) || !fs.existsSync(src)) { console.error(`licensed manifest: ${f.path} is missing`); process.exit(1) }
+    if (crypto.createHash('sha256').update(fs.readFileSync(src)).digest('hex') !== f.sha256) { console.error(`licensed manifest: ${f.path} does not match its hash`); process.exit(1) }
+  }
+  const dest = path.join(out, 'exercise-media')
+  for (const f of files) {
+    fs.mkdirSync(path.dirname(path.join(dest, f.path)), { recursive: true })
+    fs.copyFileSync(path.resolve(from, f.path), path.join(dest, f.path))
+  }
+  fs.writeFileSync(path.join(dest, 'NOTICE.md'), `Licensed media: ${m.licence || 'see the licensed manifest'}\n`)
+  console.log(`media: ${files.length} licensed file(s) -> ${path.relative(ROOT, out) || out}`)
+  process.exit(0)
+}
 const media = path.join(ROOT, 'catalogue/media')
 const appDir = process.env.APP_MEDIA_DIR
 const clipExt = process.env.VITE_CLIP_EXT === 'webp' ? '.webp' : '.mp4'

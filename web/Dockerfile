@@ -22,11 +22,22 @@ COPY api/coach/core/ /app/api/coach/core/
 # Plan import rules shared with the API (api/shared/plan-import.js), imported by lib/plan-share.js.
 COPY api/shared/ /app/api/shared/
 COPY frontend/ ./
+COPY deploy/pilot/ /app/deploy/pilot/
+# The exercise stills and animations, 180 px, licensed from Gym visual for openGym only: see
+# catalogue/media/NOTICE.md. Into this build stage only; the upstream build moves them into
+# dist/ below, the pilot product build (PILOT_PRODUCT) never does, and this stage never ships.
+COPY catalogue/media/ /app/catalogue-media/
 # Which build this is, shown in the app as "1.3.8+<build>" next to the version. Without it every
 # image built between two releases calls itself the same thing, and "which build are you running?"
 # cannot be answered from the phone. Unset, the app reports package.json's version as before.
 ARG APP_BUILD=""
-RUN APP_BUILD="$APP_BUILD" npm run build
+# PILOT_PRODUCT (a product file in deploy/pilot/) builds the gym pilot's product instead
+# (frontend/scripts/build-pilot.mjs): its own identity, and exercise media only from a licensed
+# manifest. Unset: the upstream app, with the catalogue's media.
+ARG PILOT_PRODUCT=""
+RUN if [ -n "$PILOT_PRODUCT" ]; then \
+      APP_BUILD="$APP_BUILD" PILOT_PRODUCT="/app/$PILOT_PRODUCT" node scripts/build-pilot.mjs --out dist; \
+    else APP_BUILD="$APP_BUILD" npm run build && cp -R /app/catalogue-media dist/exercise-media; fi
 
 FROM nginxinc/nginx-unprivileged:alpine
 # Same reason as in api/Dockerfile: alpine fixes land faster than the nginx image is rebuilt.
@@ -77,9 +88,9 @@ COPY web/nginx.conf.template /etc/nginx/templates/default.conf.template
 # before the template rendering at 20.
 COPY --chmod=755 web/05-check-base-path.sh /docker-entrypoint.d/
 COPY --from=build /app/frontend/dist /usr/share/nginx/html
-# The exercise stills and animations, 180 px, licensed from Gym visual for openGym only: see
-# catalogue/media/NOTICE.md. They ship inside the image; nothing is downloaded at start-up.
-COPY catalogue/media/ /usr/share/nginx/html/exercise-media/
+# The upstream build's dist/ holds the exercise media (exercise-media/, see the build stage); they
+# ship inside the image and nothing is downloaded at start-up. A pilot product image holds none
+# unless its licensed manifest named them.
 
 # Set Default ENVs for nginx
 ENV NGINX_PORT=80

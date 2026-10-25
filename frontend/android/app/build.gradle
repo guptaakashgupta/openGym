@@ -1,5 +1,12 @@
 apply plugin: 'com.android.application'
 
+// The gym pilot's product build (frontend/scripts/build-pilot.mjs) writes android/pilot.properties:
+// the product's application id and launcher label. Without the file this is the upstream app,
+// unchanged. The Java namespace stays upstream's: it is code identity, not the installed app's.
+def pilot = new Properties()
+def pilotFile = rootProject.file('pilot.properties')
+if (pilotFile.exists()) pilotFile.withInputStream { pilot.load(it) }
+
 android {
     namespace = "ch.duartesantos.opengym"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -7,7 +14,8 @@ android {
         buildConfig = true
     }
     defaultConfig {
-        applicationId "ch.duartesantos.opengym"
+        applicationId pilot.getProperty('applicationId', "ch.duartesantos.opengym")
+        manifestPlaceholders = [appLabel: pilot.getProperty('appLabel', "@string/app_name"), activityLabel: pilot.getProperty('appLabel', "@string/title_activity_main")]
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 27
@@ -84,8 +92,9 @@ dependencies {
 
 apply from: 'capacitor.build.gradle'
 
-// The asset packs themselves, generated on the release machine only (settings.gradle).
-if (rootProject.file('asset-packs.app.gradle').exists()) {
+// The asset packs themselves, generated on the release machine only (settings.gradle). Never in a
+// pilot product build: they are the restricted animations.
+if (!pilotFile.exists() && rootProject.file('asset-packs.app.gradle').exists()) {
     apply from: rootProject.file('asset-packs.app.gradle')
 }
 
