@@ -5,8 +5,9 @@
 import { t } from './i18n-core.js'
 import { isWarmupRow } from './workout-model.js'
 
-export const PYRAMID_MAX = 'max'
-export const MAX_PYRAMID_SETS = 10
+// The rules a plan file is normalised by live in api/shared/plan-rules.js, which the API shares.
+import { PYRAMID_MAX, MAX_PYRAMID_SETS, isPyramid, normalizePyramid, normalizePyramidRest, normalizePyramidWeight } from '../../../api/shared/plan-rules.js'
+export { PYRAMID_MAX, MAX_PYRAMID_SETS, isPyramid, normalizePyramid, normalizePyramidRest, normalizePyramidWeight }
 
 // One tap in the editor replaces the list with one of these.
 export const PYRAMID_PRESETS = [
@@ -16,25 +17,7 @@ export const PYRAMID_PRESETS = [
   [12, 8, 6, PYRAMID_MAX, 12],
 ]
 
-export function isPyramid(cfg) {
-  return !!cfg && Array.isArray(cfg.pyramid) && cfg.pyramid.length > 0 && (cfg.mode || 'reps') === 'reps'
-}
 
-// What the editor and a hand-edited plan file can hold, kept to what the session can train:
-// whole targets of at least one rep, "max", and no more than MAX_PYRAMID_SETS sets. `stride` 2
-// is a per-side exercise: each target is rounded up to even, so it splits evenly between L and R.
-export function normalizePyramid(list, stride = 1) {
-  if (!Array.isArray(list)) return []
-  const out = []
-  for (const v of list) {
-    if (v === PYRAMID_MAX) out.push(PYRAMID_MAX)
-    else if (v != null && v !== '' && Number.isFinite(Number(v))) {
-      const n = Math.max(1, Math.round(Number(v)))
-      out.push(Math.ceil(n / stride) * stride)
-    }
-  }
-  return out.slice(0, MAX_PYRAMID_SETS)
-}
 
 // Turning the toggle on starts from the flat "sets × reps" already there.
 export function pyramidFromFlat(cfg) {
@@ -61,23 +44,7 @@ export function pyramidTargetAt(list, i) {
 // Each set's own rest in seconds, beside the targets (`pyramidRest[i]` for `pyramid[i]`). 0 is
 // "the exercise's rest". Sized to the list; all zeros is no field at all, so a pyramid that
 // never set a rest stays the shape it was.
-export function normalizePyramidRest(rest, length) {
-  const src = Array.isArray(rest) ? rest : []
-  const out = Array.from({ length }, (_, i) => Math.max(0, Math.round(Number(src[i])) || 0))
-  return out.some(v => v > 0) ? out : []
-}
 
-// Each set's own planned weight, beside the targets (`pyramidWeight[i]` for `pyramid[i]`), in
-// the plan's unit. 0 is "no plan": the set starts from what that same set lifted last time.
-// Sized to the list; all zeros is no field at all, like pyramidRest.
-export function normalizePyramidWeight(weights, length) {
-  const src = Array.isArray(weights) ? weights : []
-  const out = Array.from({ length }, (_, i) => {
-    const w = Number(src[i])
-    return Number.isFinite(w) && w > 0 ? Math.round(w * 100) / 100 : 0
-  })
-  return out.some(v => v > 0) ? out : []
-}
 
 /** The weight planned for work set `i` of a pyramid, or 0 when that set has none. An extra set
  *  added mid-session copies the last one's, like its target. */

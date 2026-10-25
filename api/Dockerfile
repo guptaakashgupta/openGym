@@ -58,6 +58,7 @@ COPY coach ./coach
 COPY state ./state
 COPY storage ./storage
 COPY platform ./platform
+COPY shared ./shared
 COPY migrations ./migrations
 COPY scripts/migrate.mjs scripts/pilot-gym.mjs ./scripts/
 ENV NODE_ENV=production

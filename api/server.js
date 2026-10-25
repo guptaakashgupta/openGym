@@ -2935,7 +2935,7 @@ async function refuseSignup(req, res, invite) {
   try { await previewInvitation(POOL, invite); return false; }
   catch (e) {
     if (!errorAnswer(e)) throw e;
-    audit(req, 'auth.register.denied', { ok: false, msg: 'gym-invite-rejected' });
+    audit(req, 'auth.register.denied', { ok: false, msg: 'invite-rejected' });
     json(res, 403, { error: 'that invitation can no longer be used', code: 'invite' });
     return true;
   }

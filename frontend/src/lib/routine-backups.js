@@ -4,22 +4,10 @@
 // workout's swap sheet shows them first ("Your backups"). Nothing else reads it, and a routine
 // entry without it is exactly what it was.
 
-export const MAX_BACKUPS = 5
+// MAX_BACKUPS and cleanBackups: api/shared/plan-rules.js (shared with the API's plan import).
+import { MAX_BACKUPS, cleanBackups } from '../../../api/shared/plan-rules.js'
+export { MAX_BACKUPS, cleanBackups }
 
-/**
- * The list as it may be stored: unique string ids, never the exercise itself, only ones `known`
- * says exist, at most MAX_BACKUPS. An empty result is no list at all (the field is left out).
- */
-export function cleanBackups(list, selfId, known = () => true) {
-  if (!Array.isArray(list)) return []
-  const out = []
-  for (const id of list) {
-    if (typeof id !== 'string' || !id || id === selfId || out.includes(id) || !known(id)) continue
-    out.push(id)
-    if (out.length >= MAX_BACKUPS) break
-  }
-  return out
-}
 
 /** `{ subs }` to spread into a saved entry, or nothing when there are none. */
 export const withBackups = (list, selfId, known) => {

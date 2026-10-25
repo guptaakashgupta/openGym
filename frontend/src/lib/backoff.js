@@ -14,14 +14,9 @@ import { defaultIncrement, isAssisted } from './exercises.js'
 
 const round1 = v => Math.round(v * 10) / 10
 
-/** Whether a plan asks for back-off sets. Off unless switched on, so every plan saved before
- *  this field existed builds exactly as it did. A pyramid owns each set already, and a
- *  rest-pause trains one work set, so neither has anything to step down. */
-export function isBackoff(cfg) {
-  return !!cfg && cfg.backoff === true && (cfg.mode || 'reps') === 'reps'
-    && !(Array.isArray(cfg.pyramid) && cfg.pyramid.length)
-    && cfg.intensifier?.type !== 'restpause'
-}
+// isBackoff: api/shared/plan-rules.js (shared with the API's plan import).
+import { isBackoff } from '../../../api/shared/plan-rules.js'
+export { isBackoff }
 
 /**
  * The weight of work set `k` (0 = the top set) below a top set of `top`. The same grid rule a

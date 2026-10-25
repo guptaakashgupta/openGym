@@ -24,6 +24,7 @@ const workRowsForMode = (entry = {}, mode = 'reps') => {
 import { t } from './i18n-core.js'
 import { queueNext, pinState, queueLiveOn } from './queue.js'
 import { isPyramid, pyramidLabel, pyramidTargetAt, pyramidWeightAt, PYRAMID_MAX } from './pyramid.js'
+import { modeOfWith, MAX_PLANNED_WARMUPS } from '../../../api/shared/plan-rules.js'
 
 // When a workout happened, as epoch ms: its own recorded start, else noon on its calendar day.
 // Noon rather than midnight because `new Date('2026-09-22')` parses as UTC midnight, which any
@@ -49,9 +50,7 @@ export const workoutAt = w => {
 // An entry without `mode` behaves exactly as before, so every existing plan, workout and
 // plan file is read unchanged and nothing needs migrating.
 export function modeOf(cfg) {
-  const m = cfg && cfg.mode
-  if (m === 'reps' || m === 'time' || m === 'cardio') return m
-  return isCardio(cfg && cfg.id) ? 'cardio' : 'reps'
+  return modeOfWith(cfg, isCardio)   // the rule itself: api/shared/plan-rules.js
 }
 export const isTimed = cfg => modeOf(cfg) === 'time'
 
@@ -539,8 +538,8 @@ export function buildSets(S, cfg, options = {}) {
   return out
 }
 
-/** Beyond this a "warm-up" is its own workout; the config stepper stops here too. */
-export const MAX_PLANNED_WARMUPS = 5
+// MAX_PLANNED_WARMUPS: api/shared/plan-rules.js (shared with the API's plan import).
+export { MAX_PLANNED_WARMUPS }
 
 /**
  * The lightest warm-up a lift can have: the bar it is done with (bar.js barWeightFor, the

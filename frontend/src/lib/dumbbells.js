@@ -41,11 +41,9 @@ export const BELL_EQ = new Set(['dumbbell', 'kettlebell'])
 /** Whether the meaning of the weight is worth asking about for this exercise (object or id). */
 export const isBellEx = exOrId => BELL_EQ.has(exOf(exOrId)?.eq)
 
-/** A stored meaning ('as' | 'each' | 'total'), or null when there is none. S.dbLoad holds `{ mode, _ts }`. */
-export function dbLoadOf(value) {
-  const m = isMap(value) ? value.mode : value
-  return m === 'each' || m === 'total' || m === 'as' ? m : null
-}
+// dbLoadOf: api/shared/plan-rules.js (shared with the API's plan import).
+import { dbLoadOf } from '../../../api/shared/plan-rules.js'
+export { dbLoadOf }
 
 /**
  * What a weight means for this exercise right now: the routine's own choice (cfg.dbLoad), else

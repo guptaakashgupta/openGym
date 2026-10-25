@@ -15,20 +15,10 @@ import { workoutAt } from './history.js'
 
 // The muscles a map can shade, in head-to-toe order — also the order of any list
 // built from them, so "what am I neglecting" reads top-down like a body.
-export const MUSCLES = [
-  'trapezius', 'deltoids', 'chest', 'upper-back', 'serratus',
-  'biceps', 'triceps', 'forearm',
-  'abs', 'obliques', 'lower-back',
-  'gluteal', 'quadriceps', 'hamstring', 'adductors', 'hip-flexors',
-  'calves', 'tibialis',
-]
+// MUSCLES and inMuscleOrder: api/shared/plan-rules.js (shared with the API's plan import).
+import { MUSCLES, inMuscleOrder } from '../../../api/shared/plan-rules.js'
+export { MUSCLES, inMuscleOrder }
 
-// A picked list in the map's own order rather than the order the chips were tapped in — two
-// people building the same exercise get the same exercise. Unknown names keep their place at the end.
-export const inMuscleOrder = list => {
-  const at = m => { const i = MUSCLES.indexOf(m); return i < 0 ? MUSCLES.length : i }
-  return [...(list || [])].sort((a, b) => at(a) - at(b))
-}
 
 // Drawn as the silhouette, never shaded: they carry no training load.
 export const INERT = ['head', 'hair', 'neck', 'hands', 'feet', 'knees', 'ankles']

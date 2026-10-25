@@ -38,7 +38,6 @@ const MB = 1024 * 1024
 const MAX_SIZE = 200 * MB
 const MAX_EDGE = 16384
 const MAX_DUR = 3600
-const MAX_URL = 2048
 
 const intIn = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi
 
@@ -175,44 +174,10 @@ export function referencedFiles(state) {
   return [...posters.values(), ...mains.values()]
 }
 
-/**
- * A link as it may be stored and opened: http(s) only, no user name or password in it, at most
- * 2048 characters — or null. A bare "youtube.com/watch?v=…" gets https:// in front, the way people
- * paste links (#246). Anything else with a scheme of its own (javascript:, data:, mailto:, a
- * custom app scheme) is refused rather than guessed at. It runs at save and again at render,
- * because a plan file or a backup can bring any string in.
- */
-export function cleanUrl(raw) {
-  if (typeof raw !== 'string') return null
-  let s = raw.trim()
-  if (!s || s.length > MAX_URL) return null
-  if (!/^https?:\/\//i.test(s)) {
-    if (/^[a-z0-9+.-]+:/i.test(s)) return null
-    s = 'https://' + s
-  }
-  // Chrome's URL parser takes "https://not a url" and percent-encodes the spaces into the host,
-  // so "not a url" typed into the link field was saved as a link (QA 1.3.9). The host has to
-  // be one a browser could reach: no whitespace in what was typed, and a dotted name,
-  // localhost or an IP address.
-  const authority = /^https?:\/\/([^/?#]*)/i.exec(s)?.[1] || ''
-  if (/\s/.test(authority)) return null
-  let u
-  try { u = new URL(s) } catch { return null }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
-  if (!u.hostname || u.username || u.password) return null
-  if (!plausibleHost(u.hostname)) return null
-  return u.href.length <= MAX_URL ? u.href : null
-}
+// cleanUrl: api/shared/plan-rules.js (shared with the API's plan import).
+import { cleanUrl } from '../../../api/shared/plan-rules.js'
+export { cleanUrl }
 
-const LABEL = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/i
-function plausibleHost(host) {
-  if (host.startsWith('[') && host.endsWith(']')) return true               // IPv6
-  const h = host.replace(/\.$/, '').toLowerCase()
-  if (h === 'localhost') return true
-  const labels = h.split('.')
-  // xn-- names are how the parser writes an international domain, so they pass as letters.
-  return labels.length >= 2 && labels.every(l => LABEL.test(l))
-}
 
 // Hosts whose pages are, in practice, a video: the card then says "Watch video" instead of
 // "Open link". Only the wording changes — nothing is fetched or embedded either way.
