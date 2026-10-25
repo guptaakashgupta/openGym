@@ -8,8 +8,8 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test test/*.test.js",
-    "test:storage": "node --test test/storage/*.test.js",
-    "test:platform": "node --test test/platform/*.test.js",
+    "test:storage": "node --test --test-timeout=60000 test/storage/*.test.js",
+    "test:platform": "node --test --test-timeout=60000 test/platform/*.test.js",
     "migrate": "node scripts/migrate.mjs"
   },
   "dependencies": {

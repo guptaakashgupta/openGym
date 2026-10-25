@@ -37,6 +37,7 @@ import { atomicWrite as durableWrite } from './durable.js';
 import { loadConfig } from './platform/config.js';
 import { createStateStore, createIdentityStore, createTransientStore, createSubscriptionStore } from './storage/index.js';
 import { postgresAuditSink } from './storage/audit-postgres.js';
+import { platformRoutes } from './platform/routes.js';
 import { IdentityConflictError } from './storage/identity.js';
 import { StateUnreadableError } from './storage/state-file.js';
 import { StateUnsupportedError } from './storage/state-postgres.js';
@@ -2902,6 +2903,8 @@ const APP_ORIGINS = new Set(['https://localhost', 'capacitor://localhost', 'http
 
 // The operator keeps the one-time password reset (account recovery); the rest of the instance-wide
 // dashboard, the Coach and per-profile uploads are file-mode features.
+// Gym routes (platform/routes.js): product mode only; their own table, this dispatcher.
+const PLATFORM = CONFIG.mode === 'product' ? platformRoutes({ db: POOL, json, readBody, readSession, audit }) : null;
 const productUnavailable = key => {
   const path = key.slice(key.indexOf(' ') + 1);
   if (path.startsWith('/api/admin/')) return path !== '/api/admin/user/password-reset';
@@ -2948,11 +2951,14 @@ const server = http.createServer(async (req, res) => {
   // above stays a plain lookup, and so csrfOk and the catch-all see one name for every file.
   const mm = /^\/api\/media\/([0-9a-f]{64})$/.exec(url.pathname);
   if (mm) { key = req.method + ' /api/media/{hash}'; req.mediaHash = mm[1]; }
+  // Gym routes carry ids in their paths; csrfOk and the catch-all see their template key.
+  const gymRoute = PLATFORM && url.pathname.startsWith('/api/platform/') ? PLATFORM.match(req.method, url.pathname) : null;
+  if (gymRoute) key = gymRoute.key;
   // Upstream surfaces the shared pilot does not offer (docs/dev/PILOT_ENDPOINT_MATRIX.md): an
   // intentional answer before any handler, session or origin check runs, whether or not the
   // route is registered in this configuration.
   if (CONFIG.mode === 'product' && productUnavailable(key)) return json(res, 404, { error: 'not available on this service', code: 'unavailable' });
-  const handler = routes[key];
+  const handler = gymRoute ? (rq, rs) => PLATFORM.handle(rq, rs, gymRoute) : routes[key];
   if (!handler) return json(res, 404, { error: 'not found' });
   // The origin check may read an account (a Bearer has to verify), so an unavailable store is a
   // 503 here, never an unhandled rejection and never a pass.

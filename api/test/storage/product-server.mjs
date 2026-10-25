@@ -50,6 +50,7 @@ export async function bootProduct(t, { env = {} } = {}) {
   h.restart = async () => { h.child.kill('SIGKILL'); await start(); };
   const reqAt = base => async (method, p, { body, cookie, ip = '198.51.100.1', headers = {} } = {}) => {
     const r = await fetch(`${base()}${p}`, {
+      signal: AbortSignal.timeout(30000),   // a request that never answers fails the test, by name
       method,
       headers: { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin', 'X-Forwarded-For': ip, ...(cookie ? { Cookie: cookie } : {}), ...headers },
       body: body === undefined ? undefined : JSON.stringify(body)
