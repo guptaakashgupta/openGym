@@ -37,6 +37,9 @@ export async function bootProduct(t, { env = {} } = {}) {
       env: {
         ...process.env, PORT: '0', DATA_DIR: dataDir, ORIGIN, RP_ID: 'localhost',
         OPENGYM_MODE: 'product', SESSION_SECRET: secret,
+        // Signup without a gym invitation is the operator's bootstrap switch; on here so tests can
+        // make accounts over HTTP. invitations.test.js turns it off.
+        PILOT_OPEN_SIGNUP: '1',
         PASSWORD_LOGIN: '1', TRUST_PROXY: '1', INVITE_ONLY: '', ADMIN_UIDS: '', AUDIT_LOG: '1', ...env, DATABASE_URL: databaseUrl,
       }
     });

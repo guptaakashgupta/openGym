@@ -7,6 +7,7 @@ import { resolvePrincipal, requireGymRole, clientsOf } from './access.js';
 import { assignTrainer, endAssignment } from './assignments.js';
 import { endMembership, getMembership } from './memberships.js';
 import { errorAnswer, notFound, badRequest } from './errors.js';
+import { createInvitation, listInvitations, revokeInvitation, previewInvitation, redeemInvitation } from './invitations.js';
 
 const ID = '[A-Za-z0-9_-]{1,64}';
 const TEMPLATES = [
@@ -16,7 +17,13 @@ const TEMPLATES = [
   ['DELETE', '/api/platform/gyms/{gymId}/assignments/{assignmentId}'],
   ['POST', '/api/platform/gyms/{gymId}/memberships/{membershipId}/end'],
   ['GET', '/api/platform/clients'],
+  ['GET', '/api/platform/gyms/{gymId}/invitations'],
+  ['POST', '/api/platform/gyms/{gymId}/invitations'],
+  ['DELETE', '/api/platform/gyms/{gymId}/invitations/{invitationId}'],
+  ['POST', '/api/platform/invitations/preview'],
+  ['POST', '/api/platform/invitations/redeem'],
 ];
+const tokenOf = body => (typeof body.token === 'string' && body.token.length <= 200 ? body.token : '');
 const compile = path => new RegExp('^' + path.replace(/\{(\w+)\}/g, (_, n) => `(?<${n}>${ID})`) + '$');
 
 export function platformRoutes({ db, json, readBody, readSession, audit }) {
@@ -61,6 +68,37 @@ export function platformRoutes({ db, json, readBody, readSession, audit }) {
     },
 
     'GET /api/platform/clients': async ({ principal }) => ({ clients: await clientsOf(db, principal.userId) }),
+
+    'GET /api/platform/gyms/{gymId}/invitations': async ({ principal, params }) => {
+      requireGymRole(principal, params.gymId, 'owner');
+      return { invitations: await listInvitations(db, params.gymId) };
+    },
+
+    // Trainers and members only: owners are provisioned by the platform operator.
+    'POST /api/platform/gyms/{gymId}/invitations': async ({ req, principal, params, body, user }) => {
+      requireGymRole(principal, params.gymId, 'owner');
+      if (body.role !== 'trainer' && body.role !== 'member') throw badRequest('bad-role');
+      const recipientUserId = typeof body.recipientUserId === 'string' && body.recipientUserId ? body.recipientUserId : null;
+      if (recipientUserId && !(await db.query('SELECT 1 FROM users WHERE id = $1', [recipientUserId])).rows[0]) throw badRequest('recipient-unknown');
+      const made = await createInvitation(db, { gymId: params.gymId, role: body.role, createdBy: user.id, recipientUserId });
+      audit(req, 'gym.invite.create', { user, msg: `${params.gymId} ${made.invitation.id} ${body.role}` });
+      return made;
+    },
+
+    'DELETE /api/platform/gyms/{gymId}/invitations/{invitationId}': async ({ req, principal, params, user }) => {
+      requireGymRole(principal, params.gymId, 'owner');
+      await revokeInvitation(db, { gymId: params.gymId, invitationId: params.invitationId });
+      audit(req, 'gym.invite.revoke', { user, msg: `${params.gymId} ${params.invitationId}` });
+      return { ok: true };
+    },
+
+    'POST /api/platform/invitations/preview': async ({ user, body }) => previewInvitation(db, tokenOf(body), user.id),
+
+    'POST /api/platform/invitations/redeem': async ({ req, user, body }) => {
+      const r = await redeemInvitation(db, { token: tokenOf(body), userId: user.id });
+      if (!r.alreadyRedeemed) audit(req, 'gym.invite.redeem', { user, msg: `${r.gymId} ${r.role}` });
+      return r;
+    },
   };
 
   const table = TEMPLATES.map(([method, path]) => ({ method, path, re: compile(path), key: `${method} ${path}` }));

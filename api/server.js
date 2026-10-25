@@ -38,6 +38,8 @@ import { loadConfig } from './platform/config.js';
 import { createStateStore, createIdentityStore, createTransientStore, createSubscriptionStore } from './storage/index.js';
 import { postgresAuditSink } from './storage/audit-postgres.js';
 import { platformRoutes } from './platform/routes.js';
+import { previewInvitation, redeemInvitation } from './platform/invitations.js';
+import { errorAnswer } from './platform/errors.js';
 import { IdentityConflictError } from './storage/identity.js';
 import { StateUnreadableError } from './storage/state-file.js';
 import { StateUnsupportedError } from './storage/state-postgres.js';
@@ -1438,6 +1440,8 @@ const passwordRoutes = {
     if (!name) return json(res, 400, { error: 'name required', code: 'missing' });
     const code = text(body.code).trim().toUpperCase();
     const invite = () => db.invites.find(i => i.code === code && !i.usedBy && !i.revoked);
+    const gymInvite = signupInvite(body);
+    if (await refuseSignup(req, res, gymInvite)) return;
     if (INVITE_ONLY && addressPaused(req, res, 'signup')) return;
     if (INVITE_ONLY && !invite()) {
       audit(req, 'auth.register.denied', { ok: false, name, msg: 'invite-rejected' });
@@ -1495,6 +1499,7 @@ const passwordRoutes = {
       return e.field === 'email' ? emailRefused() : nameRefused();
     }
     if (inv) { inv.usedBy = user.id; inv.usedAt = created; saveDb(); }
+    await joinAfterSignup(req, user, gymInvite);
     audit(req, 'auth.register.ok', { user, msg: inv ? inv.code + ' · password' : 'password' });
     json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': sessionCookie(user) });
   },
@@ -2200,6 +2205,8 @@ const routes = {
     const name = text(body.name).trim().slice(0, 40);
     if (!name) return json(res, 400, { error: 'name required' });
     const code = text(body.code).trim().toUpperCase();
+    const gymInvite = signupInvite(body);
+    if (await refuseSignup(req, res, gymInvite)) return;
     if (INVITE_ONLY && !db.invites.some(i => i.code === code && !i.usedBy && !i.revoked)) {
       // The rejected code itself is never recorded — a near-miss guess in the log is a liability.
       audit(req, 'auth.register.denied', { ok: false, name, msg: 'invite-rejected' });
@@ -2213,7 +2220,7 @@ const routes = {
       authenticatorSelection: { residentKey: 'required', userVerification: 'preferred' },
       excludeCredentials: []
     });
-    const cid = await putChallenge({ kind: 'register', challenge: options.challenge, name, uid, code });
+    const cid = await putChallenge({ kind: 'register', challenge: options.challenge, name, uid, code, ...(gymInvite ? { gymInvite } : {}) });
     json(res, 200, { cid, options });
   },
 
@@ -2248,6 +2255,8 @@ const routes = {
       return json(res, 409, { error: 'credential already registered' });
     };
     if (await IDENTITY.findCredential(credential.id)) return credentialExists();
+    // Checked again at the last moment: the invitation may have been used or revoked since options.
+    if (await refuseSignup(req, res, c.gymInvite || '')) return;
     // Re-check the invite at the last moment (it may have been used/revoked since options), then burn it.
     let invite = null;
     if (INVITE_ONLY) {
@@ -2276,6 +2285,7 @@ const routes = {
       throw e;
     }
     if (invite) { invite.usedBy = user.id; invite.usedAt = user.created; saveDb(); }
+    await joinAfterSignup(req, user, c.gymInvite);
     audit(req, 'auth.register.ok', { user, msg: invite ? invite.code : null });
     json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': sessionCookie(user) });
   },
@@ -2905,6 +2915,30 @@ const APP_ORIGINS = new Set(['https://localhost', 'capacitor://localhost', 'http
 // dashboard, the Coach and per-profile uploads are file-mode features.
 // Gym routes (platform/routes.js): product mode only; their own table, this dispatcher.
 const PLATFORM = CONFIG.mode === 'product' ? platformRoutes({ db: POOL, json, readBody, readSession, audit }) : null;
+// Product mode has no global signup: a new account needs a gym invitation (platform/invitations.js),
+// which the signup redeems. PILOT_OPEN_SIGNUP=1 is the operator's bootstrap switch, off by default.
+const PILOT_OPEN_SIGNUP = /^(1|true|yes|on)$/i.test(process.env.PILOT_OPEN_SIGNUP || '');
+const signupInvite = body => (typeof body.invite === 'string' && body.invite.length <= 200 ? body.invite : '');
+// Null when this signup may go ahead; otherwise the refusal has been answered.
+async function refuseSignup(req, res, invite) {
+  if (CONFIG.mode !== 'product' || (!invite && PILOT_OPEN_SIGNUP)) return false;
+  if (!invite) { json(res, 403, { error: 'joining needs an invitation from your gym', code: 'invite' }); return true; }
+  try { await previewInvitation(POOL, invite); return false; }
+  catch (e) {
+    if (!errorAnswer(e)) throw e;
+    audit(req, 'auth.register.denied', { ok: false, msg: 'gym-invite-rejected' });
+    json(res, 403, { error: 'that invitation can no longer be used', code: 'invite' });
+    return true;
+  }
+}
+// After the account exists: the join. A token taken by someone else in the moment between the
+// check and here leaves an account without a gym, which a fresh invitation fixes.
+// ponytail: two transactions; one would need the identity store to share the client.
+async function joinAfterSignup(req, user, invite) {
+  if (CONFIG.mode !== 'product' || !invite) return;
+  try { await redeemInvitation(POOL, { token: invite, userId: user.id }); }
+  catch (e) { if (!errorAnswer(e)) throw e; audit(req, 'gym.invite.redeem', { ok: false, user, msg: e.code }); }
+}
 const productUnavailable = key => {
   const path = key.slice(key.indexOf(' ') + 1);
   if (path.startsWith('/api/admin/')) return path !== '/api/admin/user/password-reset';

@@ -15,7 +15,8 @@ Inventory taken 25 Oct 2026 with
 | `GET/PUT /api/data`, `GET /api/data/rev` | Supported | `member_states` (state-postgres.js) |
 | `GET /api/nudge-check` | Supported | `member_states` |
 | `GET /api/me`, `POST /api/logout`, `POST /api/logout/all` | Supported | `users` (identity-postgres.js) |
-| `POST /api/register/{options,verify}`, `POST /api/login/{options,verify}` | Supported; signup gating by gym invitation arrives in plan task 12 | `users`, `credentials`, `auth_challenges` |
+| `POST /api/register/{options,verify}`, `POST /api/login/{options,verify}` | Supported. Signup (passkey or password) needs a gym invitation (`invite`) and redeems it; `PILOT_OPEN_SIGNUP=1` is the operator's bootstrap switch | `users`, `credentials`, `auth_challenges`, `gym_invitations` |
+| `/api/platform/*` (me, members, assignments, memberships/end, clients, invitations, invitations/preview, invitations/redeem) | Product only; scoped by current membership (platform/routes.js) | `gyms`, `gym_memberships`, `trainer_assignments`, `gym_invitations` |
 | `POST /api/register/password`, `POST /api/login/password`, `POST /api/login/password-reset` | Supported when `PASSWORD_LOGIN` is on | `users`, `login_identifiers` |
 | `GET/POST/DELETE /api/account/password`, `POST/DELETE /api/account/email` | Supported | `users`, `login_identifiers` |
 | `GET/POST/DELETE /api/account/passkeys*`, `POST /api/account/device-link`, `POST /api/device-link/{options,verify}` | Supported | `credentials`, `device_links` |
@@ -53,5 +54,5 @@ other. Run more than one only after moving these to a single scheduled owner.
 ## db.json in product mode
 
 Never an authority for accounts, credentials, subscriptions, codes or state. It is still loaded
-for the upstream instance invites (`db.invites`), which product mode does not use; plan task 12
-replaces signup gating with gym invitations.
+for the upstream instance invites (`db.invites`), which product mode does not use: signup is gated
+by gym invitations instead. Leave `INVITE_ONLY` off in product mode.
