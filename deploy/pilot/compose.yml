@@ -1,0 +1,76 @@
+# The gym pilot's shared deployment (docs/ops/PILOT_RUNBOOK.md): one web/API pair behind HTTPS,
+# a managed PostgreSQL reached over TLS, private object storage, secrets from outside the
+# repository. Placeholders only: nothing here names a real host, account or secret.
+#
+#   cp deploy/pilot/.env.example deploy/pilot/.env        # non-secret settings
+#   # secrets.env: DATABASE_URL, SESSION_SECRET — from the secret manager, never committed
+#   docker compose -f deploy/pilot/compose.yml --env-file deploy/pilot/.env run --rm migrate
+#   docker compose -f deploy/pilot/compose.yml --env-file deploy/pilot/.env up -d
+#
+# Staging and production are separate copies of this with their own .env, secrets, database,
+# object store and domain; they share nothing.
+name: gympilot-${PILOT_ENV:?set PILOT_ENV to staging or production}
+
+x-api-env: &api-env
+  OPENGYM_MODE: product
+  NODE_ENV: production
+  PORT: "3000"
+  DATA_DIR: /data
+  TRUST_PROXY: "1"
+  RP_ID: ${PILOT_DOMAIN:?}
+  ORIGIN: https://${PILOT_DOMAIN:?}
+  OBJECT_STORE: fs:/objects
+  ADMIN_UIDS: ${ADMIN_UIDS:-}
+  AUDIT_DAYS: ${AUDIT_DAYS:-90}
+  VAPID_SUBJECT: ${VAPID_SUBJECT:?}
+
+services:
+  # Schema migrations, run once per release before the API starts (and never by the API itself).
+  migrate:
+    image: ${API_IMAGE:?pin the API image by digest}
+    profiles: [migrate]
+    env_file: ${SECRETS_FILE:?path to secrets.env}
+    command: ["node", "scripts/migrate.mjs"]
+
+  # One replica: the hourly media sweep, object cleanup and audit prune run in-process, and the
+  # pilot keeps a single owner for them (they are idempotent, not leader-elected).
+  api:
+    image: ${API_IMAGE:?}
+    restart: unless-stopped
+    env_file: ${SECRETS_FILE:?}
+    environment: *api-env
+    volumes:
+      - api-data:/data        # VAPID keys and temporary uploads only; accounts and history are in PostgreSQL
+      - objects:/objects      # private uploads; back up with the database (PILOT_DATA_RECOVERY.md)
+    logging: &logs
+      driver: json-file
+      options: { max-size: 10m, max-file: "5" }
+
+  web:
+    image: ${WEB_IMAGE:?pin the web image by digest}
+    restart: unless-stopped
+    depends_on: [api]
+    environment:
+      NGINX_PORT: "8080"
+      BACKEND: api
+      PORT: "3000"
+    logging: *logs
+
+  # HTTPS ingress: the only published ports. Certificates for PILOT_DOMAIN from the ACME issuer.
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2.8-alpine}
+    restart: unless-stopped
+    depends_on: [web]
+    ports: ["80:80", "443:443"]
+    environment:
+      PILOT_DOMAIN: ${PILOT_DOMAIN:?}
+      ACME_EMAIL: ${ACME_EMAIL:?}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    logging: *logs
+
+volumes:
+  api-data:
+  objects:
+  caddy-data:

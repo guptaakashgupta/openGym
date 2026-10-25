@@ -1,0 +1,15 @@
+# HTTPS ingress for deploy/pilot/compose.yml. Copy to deploy/pilot/Caddyfile. PILOT_DOMAIN and
+# ACME_EMAIL come from the environment; the certificate is issued and renewed automatically.
+{
+	email {$ACME_EMAIL}
+}
+
+{$PILOT_DOMAIN} {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	# The web container serves the app and proxies /api to the API (web/nginx.conf.template).
+	reverse_proxy web:8080
+}

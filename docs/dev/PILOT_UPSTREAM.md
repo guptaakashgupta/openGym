@@ -12,6 +12,8 @@ listed in `PILOT_CUSTOMISATIONS.md`.
 | `upstream` | `https://github.com/DuarteSantos8/openGym.git` (added 25 Oct 2026, fetch only) |
 | Inspected baseline | `7a3ace53` |
 | Fetched `upstream/main` | `7a3ace53c5e910c2185f22df803726c5838a99ae` (identical to the baseline; no newer upstream commit yet) |
+| Fetched `upstream/main` (26 Oct 2026) | `042c9ee42282756ab0e6e86a1cd5c710efaecee6`: one commit, `.github/ISSUE_TEMPLATE/bug_report.yml` only |
+| Last rehearsal | `integration/upstream-2026-10-26` (local): clean merge of `042c9ee`; record in `docs/ops/PILOT_RUNBOOK.md` |
 | Working tree at start | clean apart from an untracked root `AGENTS.md` that belongs to a separate task |
 
 ## Branches

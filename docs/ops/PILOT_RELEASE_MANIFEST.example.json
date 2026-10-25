@@ -1,0 +1,23 @@
+{
+  "release": "pilot-v0.1.0",
+  "environment": "staging",
+  "releasedAt": "2026-10-26T00:00:00.000Z",
+  "productSha": "<40-hex commit of pilot/gym-platform>",
+  "upstreamSha": "<40-hex upstream commit it is based on>",
+  "schemaVersion": "011",
+  "images": {
+    "api": "registry.example.com/gympilot/api@sha256:<digest>",
+    "web": "registry.example.com/gympilot/web@sha256:<digest>"
+  },
+  "supportedAppBuilds": [
+    { "platform": "android", "applicationId": "com.example.gympilot", "versionName": "<current>", "versionCode": 0, "fixture": "api/test/fixtures/pilot-clients/current.json" },
+    { "platform": "android", "applicationId": "com.example.gympilot", "versionName": "<previous>", "versionCode": 0, "fixture": "api/test/fixtures/pilot-clients/previous.json" }
+  ],
+  "migrations": { "applied": ["001_identity_state.sql", "011_import_runs.sql"], "rollbackPlan": "restore the pre-release database backup into a new database; see docs/ops/PILOT_RUNBOOK.md" },
+  "lastRestore": { "verifiedAt": null, "observedRecoveryMinutes": null },
+  "limitations": [
+    "iOS app not built (docs/ops/PILOT_MOBILE_RELEASE.md)",
+    "object storage on a private volume of one host (no S3 adapter yet)",
+    "one API replica (background jobs in-process)"
+  ]
+}
