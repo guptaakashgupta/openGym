@@ -36,7 +36,7 @@ import { effectiveRoutineId } from './queue.js';
 import { prepareWrite, validateWrite, forClient, records } from './state/prepare-write.js';
 import { atomicWrite as durableWrite } from './durable.js';
 import { loadConfig } from './platform/config.js';
-import { createStateStore } from './storage/index.js';
+import { createStateStore, createIdentityStore } from './storage/index.js';
 import { StateUnreadableError } from './storage/state-file.js';
 import { StateUnsupportedError } from './storage/state-postgres.js';
 import { createPool } from './storage/postgres.js';
@@ -156,6 +156,9 @@ db.creds = db.creds || [];
 db.subs = db.subs || [];
 db.invites = db.invites || [];
 db.deviceLinks = db.deviceLinks || [];   // unused one-time device links, hashed (device-link.js)
+// Accounts and passkey credentials (storage/identity-*.js): db.json's arrays in file mode,
+// PostgreSQL in product mode.
+const IDENTITY = createIdentityStore(CONFIG, { db, save: () => saveDb(), pool: POOL });
 const isAdmin = user => !!user && (user.admin === true || ADMIN_UIDS.includes(user.id));
 // One owner per instance, any number of admins. Admins run the place day to day (users, invites,
 // the Coach); the owner is the one admin the others cannot act on: only the owner appoints or
