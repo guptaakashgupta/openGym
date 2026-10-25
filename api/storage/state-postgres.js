@@ -26,6 +26,26 @@ function revisionOf(raw) {
   return n;
 }
 
+// Stores a prepared write (state/prepare-write.js) inside a transaction the caller holds, with the
+// state row already locked. Shared with plan acceptance, which writes the document in its own
+// transaction after locking the gym records first.
+export async function storeMemberState(client, uid, result) {
+  const rev = result.state?._rev;
+  if (!Number.isSafeInteger(rev) || rev < 1) throw new Error(`prepared state has no valid _rev for ${uid}`);
+  try {
+    await client.query(
+      `INSERT INTO member_states (user_id, document, revision, write_id, updated_at)
+       VALUES ($1, $2::jsonb, $3, $4, now())
+       ON CONFLICT (user_id) DO UPDATE
+         SET document = EXCLUDED.document, revision = EXCLUDED.revision,
+             write_id = EXCLUDED.write_id, updated_at = now()`,
+      [uid, result.text, rev, result.state._wid ?? null]);
+  } catch (e) {
+    if (UNSUPPORTED_TEXT.has(e.code)) throw new StateUnsupportedError(uid);
+    throw e;
+  }
+}
+
 export function postgresStateStore(pool) {
   return {
     async readMemberState(uid) {
@@ -57,20 +77,7 @@ export function postgresStateStore(pool) {
         const { rows } = await client.query('SELECT document FROM member_states WHERE user_id = $1 FOR UPDATE', [uid]);
         const result = await work(rows[0]?.document ?? null);
         if (typeof result?.text !== 'string') return result;
-        const rev = result.state?._rev;
-        if (!Number.isSafeInteger(rev) || rev < 1) throw new Error(`prepared state has no valid _rev for ${uid}`);
-        try {
-          await client.query(
-            `INSERT INTO member_states (user_id, document, revision, write_id, updated_at)
-             VALUES ($1, $2::jsonb, $3, $4, now())
-             ON CONFLICT (user_id) DO UPDATE
-               SET document = EXCLUDED.document, revision = EXCLUDED.revision,
-                   write_id = EXCLUDED.write_id, updated_at = now()`,
-            [uid, result.text, rev, result.state._wid ?? null]);
-        } catch (e) {
-          if (UNSUPPORTED_TEXT.has(e.code)) throw new StateUnsupportedError(uid);
-          throw e;
-        }
+        await storeMemberState(client, uid, result);
         if (within) await within(client, result);
         return result;
       });

@@ -9,7 +9,9 @@ import { endMembership, getMembership } from './memberships.js';
 import { errorAnswer, notFound, badRequest } from './errors.js';
 import { createInvitation, listInvitations, revokeInvitation, previewInvitation, redeemInvitation } from './invitations.js';
 import { projectWorkouts } from './workout-projection.js';
+import crypto from 'node:crypto';
 import { createProposal, listProposals, getProposal, declineProposal } from './proposals.js';
+import { acceptProposal, previewReplacement } from './accept-proposal.js';
 
 const ID = '[A-Za-z0-9_-]{1,64}';
 const TEMPLATES = [
@@ -29,6 +31,7 @@ const TEMPLATES = [
   ['GET', '/api/platform/proposals'],
   ['GET', '/api/platform/proposals/{versionId}'],
   ['POST', '/api/platform/proposals/{versionId}/decline'],
+  ['POST', '/api/platform/proposals/{versionId}/accept'],
 ];
 const tokenOf = body => (typeof body.token === 'string' && body.token.length <= 200 ? body.token : '');
 const compile = path => new RegExp('^' + path.replace(/\{(\w+)\}/g, (_, n) => `(?<${n}>${ID})`) + '$');
@@ -118,7 +121,17 @@ export function platformRoutes({ db, json, readBody, readSession, audit }) {
       return { proposal };
     },
     'GET /api/platform/proposals': async ({ user }) => listProposals(db, user.id),
-    'GET /api/platform/proposals/{versionId}': async ({ user, params }) => getProposal(db, user.id, params.versionId),
+    // The recipient's view of an update also says which of their routines it would replace.
+    'GET /api/platform/proposals/{versionId}': async ({ user, params }) => {
+      const p = await getProposal(db, user.id, params.versionId);
+      if (p.role === 'recipient' && p.previousVersionId) p.replaces = await previewReplacement(db, user.id, params.versionId);
+      return p;
+    },
+    'POST /api/platform/proposals/{versionId}/accept': async ({ req, user, params, body }) => {
+      const r = await acceptProposal(db, { userId: user.id, versionId: params.versionId, body, nextWriteId: () => crypto.randomBytes(8).toString('hex') });
+      if (r.status === 200 && !r.body.alreadyAccepted) audit(req, 'gym.proposal.accept', { user, msg: params.versionId });
+      return { httpStatus: r.status, body: r.body };
+    },
     'POST /api/platform/proposals/{versionId}/decline': async ({ req, user, params }) => {
       const r = await declineProposal(db, user.id, params.versionId);
       audit(req, 'gym.proposal.decline', { user, msg: params.versionId });
@@ -150,7 +163,10 @@ export function platformRoutes({ db, json, readBody, readSession, audit }) {
       const body = req.method === 'GET' ? {} : await readBody(req);
       try {
         const principal = await resolvePrincipal(db, user.id);
-        json(res, 200, await handlers[key]({ req, user, principal, params, body }));
+        const out = await handlers[key]({ req, user, principal, params, body });
+        // A handler answers its body, or { httpStatus, body } for a refusal it explains itself.
+        if (out && typeof out.httpStatus === 'number') json(res, out.httpStatus, out.body);
+        else json(res, 200, out);
       } catch (e) {
         const answer = errorAnswer(e);
         if (!answer) throw e;
