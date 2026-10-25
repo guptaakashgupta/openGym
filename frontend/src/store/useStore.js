@@ -27,6 +27,8 @@ import { DEFAULT_TEMPLATE_ID } from '../lib/structuralBalanceTemplates.js'
 
 import { WC_DEFAULT } from '../lib/workout-controls.js'
 import { sanitizeAccent } from '../lib/accent.js'
+import { PRODUCT } from '../platform/config.js'
+import { ctxOf, forgetAccount, pendingRecordings, ready as recordingsReady } from '../platform/workout-context.js'
 
 const KEY = 'gym_state_v1'
 // Where the saved copy stands with the server: the revision it descends from, and its own `_ts`
@@ -727,6 +729,11 @@ export const useStore = create((set, get) => {
     // against the copy it holds, exactly as it would for that app (api/sync-stamps.js).
     const legacy = readLegacy()
     const body = { state: S, stamped: !(legacy && legacy.owner === get().user?.id) }
+    // Product build: new recordings staged for the gym ride on this write and are settled only
+    // from its answer (platform/workout-context.js).
+    const ctx = PRODUCT && ctxOf(get())
+    const recordings = ctx ? (await recordingsReady, pendingRecordings(ctx)) : null
+    if (recordings) Object.assign(body, recordings.fields)
     if (asReplace != null) { body.baseRev = asReplace.rev; if (asReplace.wid) body.baseWid = asReplace.wid }
     else if (!force && base) { body.baseRev = base.rev; if (base.wid) body.baseWid = base.wid }
     try {
@@ -736,6 +743,7 @@ export const useStore = create((set, get) => {
       if (r.rev == null) dropSync()
       else writeSync(r.rev, S._ts, r.wid)
       if (legacy) clearLegacy()
+      recordings?.settle(r)
       markOwed(false)
       toldTooLarge = false
       confirmed(S)
@@ -1874,7 +1882,9 @@ export const useStore = create((set, get) => {
     // proof, the last admin) or not answered, nothing here changes and the caller says why.
     async deleteAccount(name, proof = {}) {
       const uid = get().user?.id
+      const ctx = PRODUCT && ctxOf(get())
       await api('/api/account/delete', { method: 'POST', body: JSON.stringify({ name, ...proof }) })
+      if (ctx) forgetAccount(ctx)
       await stopTimers()
       const all = await readStashes()
       const key = stashKey(serverBase(), uid)

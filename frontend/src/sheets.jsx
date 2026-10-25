@@ -67,6 +67,8 @@ import { workoutText } from './lib/workout-text.js'
 import { workoutCardModel, layoutWorkoutCard, drawWorkoutCard, viewAspect, CARD_FONT } from './lib/workout-card.js'
 import { copyText } from './lib/clipboard.js'
 import { queueRemaining, pinState } from './lib/queue.js'
+import { PRODUCT } from './platform/config.js'
+import { ctxOf, recordingStarted, recordingFinished } from './platform/workout-context.js'
 import { DAY_NOTE_TAGS, DAY_NOTE_LABEL, DAY_NOTE_ICON, dayNoteOf, dayNoteLine, canNoteDay, withDayNote } from './lib/day-notes.js'
 
 const S = () => useStore.getState().S
@@ -2964,8 +2966,15 @@ export function beginWorkout(routineIds, bw, { id = null, start = null } = {}) {
       workoutView: st.workoutView || 'cards',
     }
   })
+  noteRecordingStart()
   useUI.getState().stopRest()
   navToWorkout()
+}
+// Product build: a live recording takes the gym membership known now (platform/workout-context.js).
+// Backfills, imports, restores and edits of saved workouts never come through here.
+function noteRecordingStart() {
+  const ctx = PRODUCT && ctxOf(useStore.getState())
+  if (ctx) recordingStarted(ctx, S().active.id)
 }
 
 // "Repeat today" (#58): a saved workout's exercises as a new freestyle session dated today, each
@@ -2985,6 +2994,7 @@ export function repeatWorkout(w, close) {
         workoutView: s.workoutView || 'cards',
       }
     })
+    noteRecordingStart()
     useUI.getState().stopRest()
     if (close) closeThenNav(close, '/workout'); else navToWorkout()
     if (skipped) toast(tn('{0} exercise no longer exists and was left out.', '{0} exercises no longer exist and were left out.', skipped))
@@ -3567,6 +3577,9 @@ function doFinishWorkout() {
   })
   w.vol = workoutVolume(w)
   let shown = w
+  // Staged before the update below schedules the sync that carries the workout.
+  const ctx = PRODUCT && !past && ctxOf(useStore.getState())
+  if (ctx) recordingFinished(ctx, A.id)
   update(s => {
     if (past) {
       // Its start and end are in the past; the stamp says when it was logged, which is what a

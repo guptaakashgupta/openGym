@@ -6,6 +6,7 @@
 import { create } from 'zustand'
 import { useStore } from '../store/useStore.js'
 import { platformMe } from './api.js'
+import { ctxOf, rememberMembership } from './workout-context.js'
 
 const EMPTY = { forUser: null, status: 'idle', roles: [], error: null }
 
@@ -17,7 +18,10 @@ export const useGym = create((set, get) => ({
     try {
       const me = await platformMe()
       if (useStore.getState().user?.id !== userId || get().forUser !== userId) return
-      set({ status: 'ready', roles: Array.isArray(me?.roles) ? me.roles : [] })
+      const roles = Array.isArray(me?.roles) ? me.roles : []
+      set({ status: 'ready', roles })
+      // What a workout started offline is recorded under: the member role the server confirmed now.
+      rememberMembership(ctxOf(useStore.getState()), roles.find(r => r.role === 'member')?.membershipId)
     } catch (e) {
       if (get().forUser !== userId) return
       if (e?.status === 401) set({ ...EMPTY, status: 'signed-out' })
