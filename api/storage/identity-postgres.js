@@ -139,6 +139,23 @@ export function postgresIdentityStore(pool) {
         return next;
       });
     },
+    // `refuse(credsOfTheAccount, account)` decides while the account row is locked, so two
+    // removals (or a removal and a password removal, which locks the same row) cannot both pass.
+    removeCredentialChecked(userId, credId, refuse) {
+      return transaction(pool, async client => {
+        const { rows: users } = await client.query(`SELECT ${USER_COLS} FROM users WHERE id = $1 FOR UPDATE`, [userId]);
+        const u = fromRow(users[0]);
+        const { rows } = await client.query('SELECT id, user_id, record FROM credentials WHERE user_id = $1 ORDER BY seq', [userId]);
+        const mine = rows.map(credFromRow);
+        const row = mine.find(c => c.id === credId);
+        if (!u || !row) return { error: 'passkey not found', code: 'not-found' };
+        const refused = refuse(mine, u);
+        if (refused) return refused;
+        await client.query('DELETE FROM credentials WHERE id = $1', [credId]);
+        return { ok: true, row };
+      });
+    },
+
     async removeCredential(id) {
       const r = await pool.query('DELETE FROM credentials WHERE id = $1', [id]);
       return r.rowCount > 0;

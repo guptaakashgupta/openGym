@@ -87,6 +87,21 @@ export function fileIdentityStore({ db, save }) {
       });
     },
 
+    // `refuse(credsOfTheAccount, account)` decides under the same lock as the removal.
+    removeCredentialChecked(userId, credId, refuse) {
+      return serial(() => {
+        const u = db.users.find(x => x.id === userId);
+        const mine = db.creds.filter(c => c.userId === userId);
+        const row = mine.find(c => c.id === credId);
+        if (!u || !row) return { error: 'passkey not found', code: 'not-found' };
+        const refused = refuse(copy(mine), copy(u));
+        if (refused) return refused;
+        db.creds = db.creds.filter(c => c.id !== credId);
+        save();
+        return { ok: true, row: copy(row) };
+      });
+    },
+
     removeCredential(id) {
       return serial(() => {
         const before = db.creds.length;

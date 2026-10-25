@@ -154,6 +154,22 @@ for (const [kind, make] of Object.entries(adapters)) {
     assert.equal(await store.deleteUser('a'), false);
   });
 
+  test(`${kind}: a guarded removal checks and removes atomically, so two removals never take the last passkey`, async t => {
+    const { store } = await make(t);
+    await store.createUser(user('a'), { credential: cred('k1', 'a') });
+    await store.addCredential(cred('k2', 'a'));
+    const lastOne = (creds, u) => (creds.length <= 1 && !u.pw ? { code: 'last-way-in' } : null);
+    const results = await Promise.all([
+      store.removeCredentialChecked('a', 'k1', lastOne),
+      store.removeCredentialChecked('a', 'k2', lastOne),
+    ]);
+    assert.deepEqual(results.map(r => r.ok ? 'ok' : r.code).sort(), ['last-way-in', 'ok']);
+    assert.equal((await store.listCredentials('a')).length, 1);
+    assert.equal((await store.removeCredentialChecked('a', 'missing', () => null)).code, 'not-found');
+    await store.createUser(user('b'), { credential: cred('k9', 'b') });
+    assert.equal((await store.removeCredentialChecked('a', 'k9', () => null)).code, 'not-found', 'another account’s passkey');
+  });
+
   test(`${kind}: listUsers returns every account`, async t => {
     const { store } = await make(t);
     await store.createUser(user('a'));
