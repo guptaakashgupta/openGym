@@ -31,6 +31,8 @@ import {
   transportsOf,
 } from './passkeys-store.js';
 import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE } from './media.js';
+import { createProductMedia } from './platform/uploads.js';
+import { objectStoreFrom } from './storage/objects.js';
 import { effectiveRoutineId } from './queue.js';
 import { prepareWrite, validateWrite, forClient, records } from './state/prepare-write.js';
 import { atomicWrite as durableWrite } from './durable.js';
@@ -1980,9 +1982,13 @@ const passkeyRoutes = {
 // MEDIA_UPLOADS=0 takes the routes and the /api/config block away, but the store is created
 // either way: an admin deleting a profile must still remove files uploaded while it was on.
 const MEDIA_LIMITS = mediaLimits(process.env);
-// Off in product mode until uploads move to private object storage (plan task 22).
-const MEDIA_ON = MEDIA_LIMITS.enabled && CONFIG.mode === 'file';
-const MEDIA = createMediaStore({ dir: path.join(DATA, 'uploads'), limits: MEDIA_LIMITS, readState });
+// Product mode: only with a private object store (OBJECT_STORE, storage/objects.js); the bytes
+// leave the API host and ownership lives in PostgreSQL (platform/uploads.js). Without one, off.
+const OBJECTS = CONFIG.mode === 'product' ? objectStoreFrom(process.env) : null;
+const MEDIA_ON = MEDIA_LIMITS.enabled && (CONFIG.mode === 'file' || !!OBJECTS);
+const MEDIA = OBJECTS
+  ? createProductMedia({ pool: POOL, objects: OBJECTS, limits: MEDIA_LIMITS, tmpDir: path.join(DATA, 'uploads-tmp'), readState: reminderState })
+  : createMediaStore({ dir: path.join(DATA, 'uploads'), limits: MEDIA_LIMITS, readState });
 // Leftovers of uploads the previous process was receiving when it stopped.
 try { MEDIA.cleanTmp(); } catch (e) { console.error('media: boot cleanup failed', e.message); }
 // Per profile, not per address: every upload is signed in, and behind a proxy one address can be
@@ -2022,9 +2028,9 @@ function mediaThrottle(req, user, win) {
 // profiles in db.json are swept, and only when their state parses (see media.js for why a
 // missing anything never means "delete"). First pass a few minutes after boot, so an instance
 // that is redeployed more often than hourly still gets one.
-function mediaSweepAll() {
+async function mediaSweepAll() {
   try {
-    const r = MEDIA.sweepAll({ uids: db.users.map(u => u.id) });
+    const r = await MEDIA.sweepAll({ uids: db.users.map(u => u.id) });
     if (r.removed || r.tmp) console.log(`media: swept ${r.removed} unreferenced file(s), ${(r.freedBytes / 1048576).toFixed(1)} MB, ${r.tmp} stale upload(s)`);
   } catch (e) { console.error('media: sweep failed', e); }
 }
@@ -2040,10 +2046,14 @@ if (MEDIA_ON) {
 // keeps a copy out of the HTTP cache — the app's own media store is the only client cache, and
 // an HTTP-cache copy would outlive the sign-out purge. No Range and no ETag: nothing asks.
 async function sendMediaFile(res, f, hash) {
-  let fd;
-  try { fd = fs.openSync(f.path, 'r'); }
-  catch { throw new MediaError(404, 'media-missing'); }   // swept between the lookup and here
-  const size = fs.fstatSync(fd).size;
+  // Product mode hands over an opened object (platform/uploads.js open); file mode a path.
+  let fd, stream = f.stream, size = f.size;
+  if (!stream) {
+    try { fd = fs.openSync(f.path, 'r'); }
+    catch { throw new MediaError(404, 'media-missing'); }   // swept between the lookup and here
+    size = fs.fstatSync(fd).size;
+    stream = fs.createReadStream(null, { fd });
+  }
   res.writeHead(200, {
     'Content-Type': f.mime,
     'Content-Length': String(size),
@@ -2057,7 +2067,7 @@ async function sendMediaFile(res, f, hash) {
     // CORS-safelisted already, this only spells it out for older WebViews.
     'Access-Control-Expose-Headers': 'Content-Length'
   });
-  try { await pipeline(fs.createReadStream(null, { fd }), res); }
+  try { await pipeline(stream, res); }
   catch { res.destroy(); }   // the client went away mid-download; nothing left to answer
 }
 
@@ -2078,7 +2088,7 @@ const mediaRoutes = {
     if (!user) return json(res, 401, { error: 'not signed in' });
     // Only ever the caller's own folder: another profile's file is exactly as missing as one
     // that was never uploaded.
-    const f = MEDIA.file(user.id, req.mediaHash);
+    const f = MEDIA.open ? await MEDIA.open(user.id, req.mediaHash) : MEDIA.file(user.id, req.mediaHash);
     if (!f) throw new MediaError(404, 'media-missing');
     await sendMediaFile(res, f, req.mediaHash);
   },
@@ -2092,7 +2102,7 @@ const mediaRoutes = {
     if (!Array.isArray(hashes) || hashes.length > 1000 || !hashes.every(h => typeof h === 'string' && HASH_RE.test(h))) {
       throw new MediaError(400, 'bad-request', { error: 'hashes must be a list of at most 1000 lowercase sha256 hex strings' });
     }
-    json(res, 200, MEDIA.missing(user.id, hashes));
+    json(res, 200, await MEDIA.missing(user.id, hashes));
   },
   // "Reset everything": every file the caller's current state does not reference goes now,
   // without the grace. A state that cannot be read removes nothing.
@@ -2101,9 +2111,9 @@ const mediaRoutes = {
     if (!user) return json(res, 401, { error: 'not signed in' });
     await readBody(req);
     mediaThrottle(req, user, MEDIA_SWEEPS);
-    const r = MEDIA.sweep(user.id, { graceMs: 0 });
+    const r = await MEDIA.sweep(user.id, { graceMs: 0 });
     audit(req, 'media.sweep', { user, msg: `${r.removed} file(s), ${(r.freedBytes / 1048576).toFixed(1)} MB${r.skipped ? ', state unreadable' : ''}` });
-    json(res, 200, { removed: r.removed, freedBytes: r.freedBytes, usage: MEDIA.usage(user.id) });
+    json(res, 200, { removed: r.removed, freedBytes: r.freedBytes, usage: await MEDIA.usage(user.id) });
   }
 };
 
@@ -2540,7 +2550,8 @@ const routes = {
     // referencing. Bookkeeping only: the state is already saved, so nothing here may turn a
     // successful write into an error.
     if (MEDIA_ON) {
-      try { MEDIA.noteState(user.id, prepared.state); } catch (e) { console.error('media noteState', e); }
+      // Product mode answers with a promise (platform/uploads.js); its failure is logged the same way.
+      try { MEDIA.noteState(user.id, prepared.state)?.catch?.(e => console.error('media noteState', e)); } catch (e) { console.error('media noteState', e); }
     }
     json(res, 200, prepared.body);
   },
@@ -2956,7 +2967,7 @@ async function joinAfterSignup(req, user, invite) {
 const productUnavailable = key => {
   const path = key.slice(key.indexOf(' ') + 1);
   if (path.startsWith('/api/admin/')) return path !== '/api/admin/user/password-reset';
-  return path.startsWith('/api/coach/') || path === '/api/coach' || path.startsWith('/api/media/') || path === '/api/media';
+  return path.startsWith('/api/coach/') || path === '/api/coach' || (!OBJECTS && (path.startsWith('/api/media/') || path === '/api/media'));
 };
 const server = http.createServer(async (req, res) => {
   bodyDeadline(req);

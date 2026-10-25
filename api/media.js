@@ -312,8 +312,8 @@ export function referencedHashes(state) {
 /* ---------------------------------------------------------------- the store */
 
 const round1 = n => Math.round(n * 10) / 10;
-const contentType = req => String(req.headers?.['content-type'] || '').split(';')[0].trim().toLowerCase();
-function contentLength(req) {
+export const contentType = req => String(req.headers?.['content-type'] || '').split(';')[0].trim().toLowerCase();
+export function contentLength(req) {
   const raw = req.headers?.['content-length'];
   if (raw == null || raw === '') return null;
   const n = Number(raw);
@@ -323,7 +323,7 @@ function contentLength(req) {
 // of a connection reset (closing a socket with unread bytes makes the kernel send RST, and a
 // client that sees it before parsing the answer reports a dropped connection — see readBody in
 // server.js). A client that keeps sending past `limit` is not a mistaken one and is cut off.
-function drain(req, limit) {
+export function drain(req, limit) {
   if (req.readableEnded || req.destroyed) return;
   let seen = 0;
   req.on('data', d => { seen += d.length; if (seen > limit) req.destroy(); });
@@ -339,7 +339,7 @@ function drain(req, limit) {
  * On every rejection the write stream has closed before the promise settles, so the caller can
  * unlink the file without racing a late open().
  */
-function streamToFile(req, file, { max, maxMB, idleMs }) {
+export function streamToFile(req, file, { max, maxMB, idleMs }) {
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash('sha256');
     const head = [];
@@ -406,6 +406,31 @@ function streamToFile(req, file, { max, maxMB, idleMs }) {
   });
 }
 
+// A kind's cap in MiB under the limits `L` (mediaLimits).
+export const capMB = (L, kind) => (kind === 'video' ? L.videoMB : kind === 'gif' ? L.gifMB : L.imageMB);
+
+/**
+ * What the bytes streamed into `tmp` (`got` from streamToFile) turned out to be, checked against
+ * what the upload said: the hash it named, magic bytes of the declared category, the cap of the
+ * kind actually found and, for MP4/MOV, the duration. Returns the sniff, or throws a MediaError.
+ * Shared by the file store below and the product store (platform/uploads.js).
+ */
+export function verifyUpload(tmp, got, hash, declared, L) {
+  if (got.sha !== hash) throw new MediaError(400, 'hash-mismatch');
+  const sn = sniffMedia(got.head);
+  if (!sn || sn.category !== declared.category) throw new MediaError(415, 'media-type');
+  if (got.size > Math.round(capMB(L, sn.kind) * MB)) throw new MediaError(413, 'media-too-large', { maxMB: capMB(L, sn.kind) });
+  if (sn.ext === 'mp4' || sn.ext === 'mov') {
+    const fd = fs.openSync(tmp, 'r');
+    let info;
+    try { info = mp4Info(fd, got.size); } finally { fs.closeSync(fd); }
+    if (!info) throw new MediaError(415, 'media-invalid');
+    // One second of slack: the client measures with the platform's player, which rounds.
+    if (info.durationSec != null && info.durationSec > L.videoSec + 1) throw new MediaError(413, 'media-too-long', { maxSec: L.videoSec });
+  }
+  return sn;
+}
+
 /**
  * The per-instance media store. `dir` is DATA_DIR/uploads. `readState(uid)` returns the
  * profile's stored state, or null when there is none or it does not parse — the store sweeps
@@ -414,8 +439,7 @@ function streamToFile(req, file, { max, maxMB, idleMs }) {
 export function createMediaStore({ dir, limits, now = Date.now, readState = () => null, idleMs = 60000, log = console } = {}) {
   const L = { ...mediaLimits({}), ...(limits || {}) };
   const quotaBytes = L.quotaMB > 0 ? Math.round(L.quotaMB * MB) : 0;
-  const capMB = kind => (kind === 'video' ? L.videoMB : kind === 'gif' ? L.gifMB : L.imageMB);
-  const capOf = kind => Math.round(capMB(kind) * MB);
+  const capOf = kind => Math.round(capMB(L, kind) * MB);
   const maxCap = Math.max(capOf('image'), capOf('gif'), capOf('video'));
   const users = new Map();          // safe uid -> { dir, bytes, count, reserved, inflight, hashes }
   const orphansLogged = new Set();
@@ -630,7 +654,7 @@ export function createMediaStore({ dir, limits, now = Date.now, readState = () =
         // this kind's cap would cut a photo of 5 MB off at 4 MB with a reset, and a client that
         // hits the reset before the answer reads a network error and tries again forever.
         cap = maxCap;
-        throw new MediaError(413, 'media-too-large', { maxMB: capMB(declared.kind) });
+        throw new MediaError(413, 'media-too-large', { maxMB: capMB(L, declared.kind) });
       }
       // A file this profile already has is taken as it is, unless it is not whole: its size on
       // disk differs from what the cache knows or from what this upload declares (a reset right
@@ -662,20 +686,8 @@ export function createMediaStore({ dir, limits, now = Date.now, readState = () =
       }
 
       tmp = path.join(e.dir, '.tmp', crypto.randomBytes(12).toString('hex'));
-      const got = await streamToFile(req, tmp, { max: cap, maxMB: capMB(declared.kind), idleMs });
-
-      if (got.sha !== hash) throw new MediaError(400, 'hash-mismatch');
-      const sn = sniffMedia(got.head);
-      if (!sn || sn.category !== declared.category) throw new MediaError(415, 'media-type');
-      if (got.size > capOf(sn.kind)) throw new MediaError(413, 'media-too-large', { maxMB: capMB(sn.kind) });
-      if (sn.ext === 'mp4' || sn.ext === 'mov') {
-        const fd = fs.openSync(tmp, 'r');
-        let info;
-        try { info = mp4Info(fd, got.size); } finally { fs.closeSync(fd); }
-        if (!info) throw new MediaError(415, 'media-invalid');
-        // One second of slack: the client measures with the platform's player, which rounds.
-        if (info.durationSec != null && info.durationSec > L.videoSec + 1) throw new MediaError(413, 'media-too-long', { maxSec: L.videoSec });
-      }
+      const got = await streamToFile(req, tmp, { max: cap, maxMB: capMB(L, declared.kind), idleMs });
+      const sn = verifyUpload(tmp, got, hash, declared, L);
 
       // The same bytes from another device may have landed while these were streaming. The
       // rename and the cache update below are synchronous, so this check cannot be overtaken.

@@ -25,11 +25,11 @@ Inventory taken 25 Oct 2026 with
 | `GET /api/push/public-key`, `POST /api/push/{subscribe,unsubscribe,test,rest-timer,rest-timer/cancel}`, `GET /api/push/status` | Supported | `push_subscriptions` |
 | `POST /api/activity` | Supported, process-local presence | memory |
 | `GET /api/health` | Supported: `SELECT 1`, answers `{ ok, database }` with no account count | database |
-| `GET /api/config` | Supported; never offers `media` or `coach` | — |
+| `GET /api/config` | Supported; never offers `coach`; offers `media` only with `OBJECT_STORE` set | — |
 | `POST /api/admin/user/password-reset` | Platform operator (`ADMIN_UIDS`) only: account recovery | `users` |
 | Every other `/api/admin/*` (users, user detail, disable, delete, role, owner, invites, audit) | **Unavailable** | — |
 | `/api/coach/*` | **Unavailable**: reads state files and db.json directly; AI coaching is outside the pilot | — |
-| `/api/media/*` | **Unavailable** until uploads move to private object storage (plan task 22) | — |
+| `/api/media/*` | Supported only with `OBJECT_STORE` (`fs:<dir>`; no S3 adapter until a provider is chosen): bytes under random keys in a private object store, ownership per `(user, hash)`, reads proxied per request (`platform/uploads.js`). Unset: **unavailable** | `media_objects`, `media_object_deletions`, object store |
 
 Authority: `isAdmin` in product mode is `ADMIN_UIDS` only; an `admin`, `owner`, `roles` or
 `gym_id` field on an account record grants nothing, and there is no instance owner.
@@ -43,7 +43,7 @@ Authority: `isAdmin` in product mode is `ADMIN_UIDS` only; an `admin`, `owner`, 
 | Live presence (`presence` map) | Supported, process-local |
 | Challenge, pairing and device-link expiry | Database rows expire; expired rows pruned on insert |
 | Audit compaction (`compactAudit`) | Not run. Events go to `audit_events`; retention is an operator job (plan task 23) |
-| Media sweep (`mediaSweepAll`) | Not run (uploads unavailable) |
+| Media sweep (`mediaSweepAll`) | With `OBJECT_STORE`: hourly grace sweep from `unreferenced_since`, then the resumable deletion queue and stale pending uploads (`cleanup()`). Without: not run |
 | Coach cadence and warm-up | Not started |
 | MCP server (`mcp/`) | Not offered: it reads a `DATA_DIR` that holds no state in product mode |
 
