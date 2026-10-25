@@ -7,6 +7,7 @@
    trainer_assignments, then plan proposal rows, then member_states. Following it is what keeps two
    such transactions from deadlocking each other. */
 import { newId, inTx } from './organisations.js';
+import { snapshotSeen } from './workout-visibility.js';
 
 export const ROLES = ['owner', 'trainer', 'member'];
 
@@ -32,6 +33,8 @@ export function addMembership(db, { gymId, userId, role }) {
       const { rows } = await client.query(
         `INSERT INTO gym_memberships (id, gym_id, user_id, role) VALUES ($1, $2, $3, $4) RETURNING ${COLS}`,
         [newId('m'), gymId, userId, role]);
+      // Everything already in the member's history is theirs alone, however it syncs later.
+      if (role === 'member') await snapshotSeen(client, userId);
       return fromRow(rows[0]);
     } catch (e) {
       if (e.code !== UNIQUE) throw e;

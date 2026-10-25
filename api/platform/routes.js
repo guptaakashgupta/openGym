@@ -3,11 +3,12 @@
    helpers, the origin check and the session code are server.js's. Every handler resolves the
    caller (resolvePrincipal) before it looks anything up, and every lookup is scoped to the gym or
    assignment that principal holds. */
-import { resolvePrincipal, requireGymRole, clientsOf } from './access.js';
+import { resolvePrincipal, requireGymRole, clientsOf, assignedClient } from './access.js';
 import { assignTrainer, endAssignment } from './assignments.js';
 import { endMembership, getMembership } from './memberships.js';
 import { errorAnswer, notFound, badRequest } from './errors.js';
 import { createInvitation, listInvitations, revokeInvitation, previewInvitation, redeemInvitation } from './invitations.js';
+import { projectWorkouts } from './workout-projection.js';
 
 const ID = '[A-Za-z0-9_-]{1,64}';
 const TEMPLATES = [
@@ -17,6 +18,7 @@ const TEMPLATES = [
   ['DELETE', '/api/platform/gyms/{gymId}/assignments/{assignmentId}'],
   ['POST', '/api/platform/gyms/{gymId}/memberships/{membershipId}/end'],
   ['GET', '/api/platform/clients'],
+  ['GET', '/api/platform/clients/{membershipId}/workouts'],
   ['GET', '/api/platform/gyms/{gymId}/invitations'],
   ['POST', '/api/platform/gyms/{gymId}/invitations'],
   ['DELETE', '/api/platform/gyms/{gymId}/invitations/{invitationId}'],
@@ -68,6 +70,16 @@ export function platformRoutes({ db, json, readBody, readSession, audit }) {
     },
 
     'GET /api/platform/clients': async ({ principal }) => ({ clients: await clientsOf(db, principal.userId) }),
+
+    // Online only: the answer is checked against the assignment as it is now, every time, and the
+    // client keeps no copy (docs/plans design §5).
+    'GET /api/platform/clients/{membershipId}/workouts': async ({ principal, params }) => {
+      const client = await assignedClient(db, principal.userId, params.membershipId);
+      const visible = await db.query('SELECT workout_id FROM workout_visibility WHERE user_id = $1 AND membership_id = $2',
+        [client.memberUserId, client.memberMembershipId]);
+      const doc = await db.query('SELECT document FROM member_states WHERE user_id = $1', [client.memberUserId]);
+      return projectWorkouts(doc.rows[0]?.document || {}, new Set(visible.rows.map(r => r.workout_id)));
+    },
 
     'GET /api/platform/gyms/{gymId}/invitations': async ({ principal, params }) => {
       requireGymRole(principal, params.gymId, 'owner');

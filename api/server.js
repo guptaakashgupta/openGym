@@ -39,6 +39,7 @@ import { createStateStore, createIdentityStore, createTransientStore, createSubs
 import { postgresAuditSink } from './storage/audit-postgres.js';
 import { platformRoutes } from './platform/routes.js';
 import { previewInvitation, redeemInvitation } from './platform/invitations.js';
+import { recordingsProblem, recordWorkouts } from './platform/workout-visibility.js';
 import { errorAnswer } from './platform/errors.js';
 import { IdentityConflictError } from './storage/identity.js';
 import { StateUnreadableError } from './storage/state-file.js';
@@ -2512,12 +2513,20 @@ const routes = {
     // document is read, as they always did.
     const invalid = validateWrite(body);
     if (invalid) return json(res, invalid.status, invalid.body);
+    // Product mode: new recordings the device reports beside the document, decided in the same
+    // transaction as the write (platform/workout-visibility.js). File mode has no gyms.
+    const recordingsBad = CONFIG.mode === 'product' && recordingsProblem(body.platformRecordings);
+    if (recordingsBad) return json(res, 400, { error: recordingsBad, code: 'bad-recordings' });
+    const visibility = CONFIG.mode === 'product' ? async (client, written) => {
+      const results = await recordWorkouts(client, { userId: user.id, state: written.state, events: body.platformRecordings || [] });
+      if (body.platformRecordings) written.body.platformRecordings = results;
+    } : undefined;
     // The compare-and-write runs under the store's per-profile write serialisation, and the
     // answer goes out only once the store has persisted the document.
     let prepared;
     try {
       prepared = await STATE.updateMemberState(user.id, cur =>
-        prepareWrite(cur, body, { nextWriteId: () => crypto.randomBytes(8).toString('hex') }));
+        prepareWrite(cur, body, { nextWriteId: () => crypto.randomBytes(8).toString('hex') }), visibility);
     } catch (e) {
       // Text the database cannot hold (PostgreSQL JSONB refuses an embedded NUL): refused rather
       // than silently altered, and nothing stored.
