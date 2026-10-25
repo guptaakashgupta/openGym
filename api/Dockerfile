@@ -59,7 +59,7 @@ COPY state ./state
 COPY storage ./storage
 COPY platform ./platform
 COPY migrations ./migrations
-COPY scripts/migrate.mjs ./scripts/migrate.mjs
+COPY scripts/migrate.mjs scripts/pilot-gym.mjs ./scripts/
 ENV NODE_ENV=production
 ENV PORT=3000
 EXPOSE 3000
