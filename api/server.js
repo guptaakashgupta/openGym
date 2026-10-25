@@ -35,7 +35,8 @@ import { effectiveRoutineId } from './queue.js';
 import { prepareWrite, validateWrite, forClient, records } from './state/prepare-write.js';
 import { atomicWrite as durableWrite } from './durable.js';
 import { loadConfig } from './platform/config.js';
-import { createStateStore, createIdentityStore, createTransientStore } from './storage/index.js';
+import { createStateStore, createIdentityStore, createTransientStore, createSubscriptionStore } from './storage/index.js';
+import { postgresAuditSink } from './storage/audit-postgres.js';
 import { IdentityConflictError } from './storage/identity.js';
 import { StateUnreadableError } from './storage/state-file.js';
 import { StateUnsupportedError } from './storage/state-postgres.js';
@@ -163,6 +164,8 @@ db.deviceLinks = db.deviceLinks || [];   // unused one-time device links, hashed
 // Accounts and passkey credentials (storage/identity-*.js): db.json's arrays in file mode,
 // PostgreSQL in product mode.
 const IDENTITY = createIdentityStore(CONFIG, { db, save: () => saveDb(), pool: POOL });
+// Web Push subscriptions (storage/subscriptions-*.js).
+const SUBS = createSubscriptionStore(CONFIG, { db, save: () => saveDb(), pool: POOL });
 // WebAuthn challenges, pairing codes and device links (storage/transient-*.js).
 const TRANSIENT = createTransientStore(CONFIG, { db, save: () => saveDb(), pool: POOL });
 // Every way into the account that is still waiting to be used: an unredeemed pairing code is a
@@ -171,7 +174,10 @@ async function dropWaysIn(uid) {
   await TRANSIENT.dropPairings(uid);
   await TRANSIENT.dropDeviceLinks(uid);
 }
-const isAdmin = user => !!user && (user.admin === true || ADMIN_UIDS.includes(user.id));
+// Product mode: the platform operator is ADMIN_UIDS and nothing else. A field on an account record
+// (`admin`, `owner`, anything a gym role might be called) never makes one, and there is no
+// instance owner (the upstream dashboard that needs one is unavailable there).
+const isAdmin = user => !!user && (ADMIN_UIDS.includes(user.id) || (CONFIG.mode === 'file' && user.admin === true));
 // One owner per instance, any number of admins. Admins run the place day to day (users, invites,
 // the Coach); the owner is the one admin the others cannot act on: only the owner appoints or
 // removes admins, deletes an admin's account, hands the role on, or clears the activity log.
@@ -187,7 +193,7 @@ function ownerId() {
   if (fromEnv) return fromEnv;
   return db.users.find(isAdmin)?.id || null;
 }
-const isOwner = user => !!user && isAdmin(user) && user.id === ownerId();
+const isOwner = user => CONFIG.mode === 'file' && !!user && isAdmin(user) && user.id === ownerId();
 // 0600: db.json holds passkey credential material. It used to be covered by a blanket 0700 on
 // the whole directory; now that the directory stays traversable, the file carries its own mode.
 // Once the new version is on disk, a second copy of it goes to db.json.bak, the same durable
@@ -372,11 +378,14 @@ function pushEndpointError(raw) {
 // own gets nothing: the phone in the bag must not ring for a rest timed on the desktop. The
 // client re-sends its subscription with its id on every boot, so an id that changed heals there.
 async function sendPush(userId, payload, deviceId) {
-  let subs = db.subs.filter(s => s.userId === userId);
+  // Never rejects (see the pruning note below): a store that cannot be read skips this send.
+  let subs;
+  try { subs = await SUBS.forUser(userId); }
+  catch (e) { return console.error('push: could not read subscriptions', userId, e.message); }
   if (deviceId) subs = subs.filter(s => !s.deviceId || s.deviceId === deviceId);
   if (!subs.length) return;
   const body = JSON.stringify(payload);
-  let dirty = false;
+  const dead = [];
   let next = 0;
   const worker = async () => {
     while (next < subs.length) {
@@ -386,7 +395,7 @@ async function sendPush(userId, payload, deviceId) {
       const bad = pushEndpointError(sub.endpoint);
       if (bad) {
         console.error('push endpoint refused', userId, bad);
-        db.subs = db.subs.filter(s => s.endpoint !== sub.endpoint); dirty = true;
+        dead.push(sub.endpoint);
         continue;
       }
       // urgency 'high' is the one lever we have over delivery speed — iOS/Android throttle
@@ -403,20 +412,19 @@ async function sendPush(userId, payload, deviceId) {
         // signature — a subscription made against a key this instance no longer has (data/vapid.json
         // regenerated). Neither will ever deliver again; keeping them only hides the fact from the
         // Settings toggle, which reads the browser's side. The client re-subscribes on its next boot.
-        if (e.statusCode === 404 || e.statusCode === 410 || e.statusCode === 403) {
-          db.subs = db.subs.filter(s => s.endpoint !== sub.endpoint); dirty = true;
-        }
+        if (e.statusCode === 404 || e.statusCode === 410 || e.statusCode === 403) dead.push(sub.endpoint);
       }
     }
   };
   await Promise.all(Array.from({ length: Math.min(PUSH_CONCURRENCY, subs.length) }, worker));
   // Pruning dead subscriptions is bookkeeping, not the send. Most callers do not await this
-  // function at all (the rest-timer setTimeout, the Coach proposal hook), so a ./data that cannot
-  // be written right now — disk full, read-only mount, EIO — would turn the throw into an
-  // unhandled rejection and take the process down. The row is already gone from db.subs in
-  // memory, so only the copy on disk lags: the next saveDb() that succeeds, from any route,
-  // writes it out, and a restart re-reads the old file and prunes it again on the next send.
-  if (dirty) { try { saveDb(); } catch (e) { console.error('push: could not save db.json', e.message); } }
+  // function at all (the rest-timer setTimeout, the Coach proposal hook), so a store that cannot
+  // be written right now — disk full, read-only mount, EIO, a database blip — must not turn into
+  // an unhandled rejection that takes the process down. A row left behind is pruned again on the
+  // next send.
+  for (const endpoint of dead) {
+    try { await SUBS.remove(endpoint); } catch (e) { console.error('push: could not prune a subscription', e.message); }
+  }
 }
 
 // Rest-timer alerts: client schedules on start/extend, cancels on skip or on-screen completion —
@@ -492,7 +500,7 @@ const minutesLate = (time, now) => hhmmToMin(now.hhmm) - hhmmToMin(time);
 // reminder — until 21:30 on the user's clock, the same catch-up idea as the reminder's window: a
 // restart inside the evening still sends it. Once per local date (`user.lastNudge`), never while
 // a workout is on screen, and nudgeFor() decides the day and the back-off.
-function nudgeTick(user, S, now) {
+async function nudgeTick(user, S, now) {
   if (!S.reminder.nudge || user.lastNudge === now.date) return;
   if (!nudgeWindowOpen(S.reminder.time, now.hhmm)) return;
   if (livePresence(user.id)) return; // a session is under way — today's workout in the making
@@ -500,8 +508,7 @@ function nudgeTick(user, S, now) {
   if (!rid) return;
   const routine = (S.routines || []).find(r => r?.id === rid);
   console.log('nudge firing', user.id, rid);
-  user.lastNudge = now.date;
-  saveDb();
+  await IDENTITY.updateUser(user.id, u => { u.lastNudge = now.date; });
   sendPush(user.id, nudgePush(S.lang, toneOf(S.reminder), routine, now.date));
 }
 // What the tick needs to know before it reads a whole state: the reminder settings and whether
@@ -528,15 +535,38 @@ function stateSummary(uid) {
   stateSummaries.set(uid, sum);
   return sum;
 }
+// Product mode: the same summary from PostgreSQL (state-postgres.js readSummary), kept per user
+// against the stored revision instead of the file's mtime and size.
+const productSummaries = new Map(); // uid -> { rev, rem, consent, settled }
+async function reminderSummary(uid) {
+  if (CONFIG.mode === 'file') return stateSummary(uid);
+  const r = await STATE.readSummary(uid);
+  if (!r) { productSummaries.delete(uid); return null; }
+  const had = productSummaries.get(uid);
+  if (had && had.rev === r.rev) return had;
+  const rem = r.reminder;
+  const sum = { rev: r.rev, rem: rem && typeof rem === 'object' ? { on: !!rem.on, tz: rem.tz, time: rem.time, nudge: !!rem.nudge } : { on: false }, consent: r.consent, settled: '' };
+  productSummaries.set(uid, sum);
+  return sum;
+}
+const reminderState = uid => (CONFIG.mode === 'file' ? readStateCached(uid) : STATE.readMemberState(uid));
+// One pass at a time: a pass that reads the database can outlast the interval.
+// Single owner: run one API process with the tick in product mode (docs/dev/PILOT_ENDPOINT_MATRIX.md).
+let reminderTickRunning = false;
 setInterval(() => {
-  for (const user of db.users) {
-    if (user.disabled) continue;            // locked out everywhere, reminders included
-    if (!db.subs.some(s => s.userId === user.id)) continue;
+  if (reminderTickRunning) return;
+  reminderTickRunning = true;
+  reminderTick().catch(e => console.error('reminder tick', e)).finally(() => { reminderTickRunning = false; });
+}, REMINDER_TICK_MS).unref();
+async function reminderTick() {
+  for (const uid of await SUBS.userIds()) {
+    const user = await IDENTITY.getUser(uid);
+    if (!user || user.disabled) continue;    // locked out everywhere, reminders included
     // One user's state file is one user's problem: a shape this tick cannot read is logged and
     // skipped, not allowed to take the process — and everyone else's reminders — down with it.
     // PUT /api/data refuses the obvious shapes, but a file already on disk answers to nobody.
     try {
-      const sum = stateSummary(user.id);
+      const sum = await reminderSummary(user.id);
       if (!sum?.rem.on) continue;
       const now = userNow(sum.rem.tz || 'UTC');
       if (!now) continue;
@@ -544,9 +574,9 @@ setInterval(() => {
       const reminderOpen = late >= 0 && late <= REMINDER_WINDOW_MIN && user.lastReminder !== now.date && sum.settled !== now.date;
       const nudgeOpen = sum.rem.nudge && user.lastNudge !== now.date && nudgeWindowOpen(sum.rem.time, now.hhmm);
       if (!reminderOpen && !nudgeOpen) continue;
-      const S = readStateCached(user.id);
+      const S = await reminderState(user.id);
       if (!S?.reminder?.on) continue;
-      if (nudgeOpen) nudgeTick(user, S, now);
+      if (nudgeOpen) await nudgeTick(user, S, now);
       if (!reminderOpen) continue;
       // Nothing below depends on anything but the file, so an answer of "nothing owed today"
       // holds until the file changes (which drops the summary) or the date does.
@@ -556,16 +586,15 @@ setInterval(() => {
       if (!rid) { sum.settled = now.date; continue; } // rest day — nothing planned
       const routine = (S.routines || []).find(r => r?.id === rid);
       console.log('reminder firing', user.id, rid);
-      user.lastReminder = now.date;
-      saveDb();
-      sendPush(user.id, dayReminderPush(S.lang, routine));
+      await IDENTITY.updateUser(user.id, u => { u.lastReminder = now.date; });
+      sendPush(user.id, dayReminderPush(S.lang, routine)).catch(e => console.error('push', e));
     } catch (e) {
       console.error('reminder tick', user.id, e);
     }
   }
+}
 // Checked every 10s (not 60s) — ticks aren't aligned to the top of the minute, so a 60s
 // interval could sit on your target minute for up to 59s before noticing. 10s caps that at ~9s.
-}, REMINDER_TICK_MS).unref();
 
 /* ---------- sessions (signed cookie) ---------- */
 function sign(payload) {
@@ -964,12 +993,16 @@ function audit(req, ev, f = {}) {
   if (f.act) rec.act = String(f.act).slice(0, 40);
   const ip = clientIp(req);
   if (ip) rec.ip = ip;
+  if (AUDIT_SINK) { AUDIT_SINK.write(rec).catch(e => console.error('audit write failed', e.message)); return; }
   try { fs.appendFileSync(auditFile, JSON.stringify(rec) + '\n'); }
   catch (e) { return console.error('audit write failed', e.message); }
   // Amortized: a 5000-event cap rewrites the file once per ~1250 events.
   if (AUDIT_MAX && ++auditCount > AUDIT_MAX * 1.25) compactAudit();
 }
-if (AUDIT_ON) {
+// Product mode writes the trail to PostgreSQL (storage/audit-postgres.js); retention there is
+// the operator's scheduled job, not this compaction.
+const AUDIT_SINK = AUDIT_ON && CONFIG.mode === 'product' ? postgresAuditSink(POOL) : null;
+if (AUDIT_ON && !AUDIT_SINK) {
   compactAudit();                                // prune on boot, seed auditSeq/auditCount
   setInterval(compactAudit, 3600000).unref();    // honour AUDIT_DAYS on an idle instance too
 }
@@ -1017,7 +1050,8 @@ const ADDR_FAILS = createBackoff({ free: 20, baseMs: 30000, maxMs: 15 * 60000, f
 const ACCOUNT_FAILS = createBackoff({
   free: 5, baseMs: 60000, maxMs: 3600000, forgetMs: 24 * 3600000,
   // At most one per profile with a password, so this cannot grow without bound.
-  keep: k => k.startsWith('acct:') && hasPassword(db.users.find(u => u.id === k.slice(5)))
+  // Product mode keeps every account's count (accounts are not in memory to ask), still at most one each.
+  keep: k => k.startsWith('acct:') && (CONFIG.mode === 'product' || hasPassword(db.users.find(u => u.id === k.slice(5))))
 });
 setInterval(() => { AUTH_BURST.sweep(); ADDR_FAILS.sweep(); ACCOUNT_FAILS.sweep(); }, 60000).unref();
 
@@ -1332,7 +1366,7 @@ async function removeEmail(req, res, user, body) {
 async function removeAccount(u) {
   // The account and its passkeys (and, in product mode, its training history) in one write.
   await IDENTITY.deleteUser(u.id);
-  db.subs = (db.subs || []).filter(x => x.userId !== u.id);
+  await SUBS.removeUser(u.id);
   await TRANSIENT.dropDeviceLinks(u.id);
   await TRANSIENT.dropPairings(u.id);
   presence.delete(u.id);
@@ -1939,7 +1973,8 @@ const passkeyRoutes = {
 // MEDIA_UPLOADS=0 takes the routes and the /api/config block away, but the store is created
 // either way: an admin deleting a profile must still remove files uploaded while it was on.
 const MEDIA_LIMITS = mediaLimits(process.env);
-const MEDIA_ON = MEDIA_LIMITS.enabled;
+// Off in product mode until uploads move to private object storage (plan task 22).
+const MEDIA_ON = MEDIA_LIMITS.enabled && CONFIG.mode === 'file';
 const MEDIA = createMediaStore({ dir: path.join(DATA, 'uploads'), limits: MEDIA_LIMITS, readState });
 // Leftovers of uploads the previous process was receiving when it stopped.
 try { MEDIA.cleanTmp(); } catch (e) { console.error('media: boot cleanup failed', e.message); }
@@ -2102,6 +2137,12 @@ const routes = {
   // the status and nothing else, and an instance that cannot write its data directory is exactly
   // what "unhealthy" is for. The 200 keeps the shape it had, plus the flag it is now asserting.
   'GET /api/health': async (req, res) => {
+    // Product mode: the database is what the service needs, and nothing about who is on it.
+    if (CONFIG.mode === 'product') {
+      try { await POOL.query('SELECT 1'); }
+      catch (e) { console.error('health: database unreachable', e.message); return json(res, 503, { ok: false, database: false }); }
+      return json(res, 200, { ok: true, database: true });
+    }
     if (!dataWritable()) return json(res, 503, { ok: false, writable: false });
     json(res, 200, { ok: true, users: db.users.length, writable: true });
   },
@@ -2134,7 +2175,7 @@ const routes = {
       // Public like the two flags above: the caps are not a secret, and the absence of the
       // block is how the app knows this server does not take photos and videos at all.
       ...(MEDIA_ON ? { media: mediaConfig(MEDIA_LIMITS) } : {}),
-      ...(await readSession(req) ? { coach: coachConfig.publicConfig() } : {})
+      ...(CONFIG.mode === 'file' && await readSession(req) ? { coach: coachConfig.publicConfig() } : {})
     });
   },
 
@@ -2443,7 +2484,7 @@ const routes = {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date + 'T00:00:00Z'))) {
       return json(res, 400, { error: 'date must be YYYY-MM-DD', code: 'date-invalid' });
     }
-    const doc = readStateCached(user.id) || {};
+    const doc = (await reminderState(user.id)) || {};
     const workouts = Array.isArray(doc.workouts) ? doc.workouts : [];
     const done = workouts.some(w => w && w.d === date) || excusedOn(doc, date);
     let nudge = false;
@@ -2511,24 +2552,22 @@ const routes = {
     // account's reminders arriving on a device somebody else is using.
     const keyDigest = k => crypto.createHash('sha256').update(`${k?.p256dh}\n${k?.auth}`).digest();
     const sameKeys = k => crypto.timingSafeEqual(keyDigest(k), keyDigest(keys));
-    if (db.subs.some(s => s.endpoint === sub.endpoint && s.userId !== user.id && !sameKeys(s.keys))) {
+    const prev = await SUBS.byEndpoint(sub.endpoint);
+    if (prev && prev.userId !== user.id && !sameKeys(prev.keys)) {
       return json(res, 409, { error: 'this subscription belongs to another account' });
     }
-    const prev = db.subs.find(s => s.endpoint === sub.endpoint);
     // No usable id in the request (none, or not a short token) leaves the id the row already
     // has: the request is a re-send, not a request to forget which device the row is.
     const storedDevice = deviceId || prev?.deviceId;
-    db.subs = db.subs.filter(s => s.endpoint !== sub.endpoint);
+    await SUBS.remove(sub.endpoint);
     // A browser holds one subscription per device, so this cap is far above real use. Without
     // it a single account could pile up endpoints without limit — every one of them a target
     // sendPush() would then contact, and a whole rewrite of db.json per addition.
-    const mine = db.subs.filter(s => s.userId === user.id);
+    const mine = await SUBS.forUser(user.id);
     if (mine.length >= MAX_SUBS_PER_USER) {
-      const drop = new Set(mine.slice(0, mine.length - MAX_SUBS_PER_USER + 1).map(s => s.endpoint));
-      db.subs = db.subs.filter(s => !drop.has(s.endpoint));
+      for (const s of mine.slice(0, mine.length - MAX_SUBS_PER_USER + 1)) await SUBS.remove(s.endpoint);
     }
-    db.subs.push({ userId: user.id, endpoint: sub.endpoint, keys, ...(storedDevice ? { deviceId: storedDevice } : {}), created: prev?.created || new Date().toISOString() });
-    saveDb();
+    await SUBS.put({ userId: user.id, endpoint: sub.endpoint, keys, ...(storedDevice ? { deviceId: storedDevice } : {}), created: prev?.created || new Date().toISOString() });
     json(res, 200, { ok: true });
   },
 
@@ -2543,7 +2582,8 @@ const routes = {
     const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     const endpoint = new URL(req.url, 'http://x').searchParams.get('endpoint') || '';
-    const row = db.subs.find(s => s.userId === user.id && s.endpoint === endpoint);
+    const found = await SUBS.byEndpoint(endpoint);
+    const row = found?.userId === user.id ? found : null;
     json(res, 200, row ? { subscribed: true, deviceId: row.deviceId || null } : { subscribed: false });
   },
 
@@ -2551,8 +2591,7 @@ const routes = {
     const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     const body = await readBody(req);
-    db.subs = db.subs.filter(s => !(s.userId === user.id && s.endpoint === body.endpoint));
-    saveDb();
+    await SUBS.remove(body.endpoint, user.id);
     json(res, 200, { ok: true });
   },
 
@@ -2560,7 +2599,7 @@ const routes = {
     const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     if (pushThrottled(res, PUSH_TESTS, user)) return;
-    await sendPush(user.id, testPush(readStateCached(user.id)?.lang));
+    await sendPush(user.id, testPush((await reminderState(user.id))?.lang));
     json(res, 200, { ok: true });
   },
 
@@ -2576,7 +2615,7 @@ const routes = {
     const n = typeof raw === 'number' || typeof raw === 'string' ? Number(raw) : NaN;
     if (!(n >= 1)) return json(res, 400, { error: 'seconds required' });
     const sec = Math.min(3600, Math.round(n));
-    scheduleRestTimer(user.id, deviceIdOf(body.deviceId), sec, readStateCached(user.id)?.lang);
+    scheduleRestTimer(user.id, deviceIdOf(body.deviceId), sec, (await reminderState(user.id))?.lang);
     json(res, 200, { ok: true });
   },
 
@@ -2831,8 +2870,11 @@ coachJobs.setProposalHook((uid, pending) => {
     tag: 'coach-proposal', url: '#/coach'
   });
 });
-startCadence({ users: () => db.users.filter(u => !u.disabled), userNow, skip: uid => !stateSummary(uid)?.consent });
-startWarmup();
+// The Coach reads state files and db.json directly; product mode does not offer it.
+if (CONFIG.mode === 'file') {
+  startCadence({ users: () => db.users.filter(u => !u.disabled), userNow, skip: uid => !stateSummary(uid)?.consent });
+  startWarmup();
+}
 
 // node's requestTimeout is one number for every route, and it is half an hour (below) for the
 // sake of one: a video uploaded over a slow uplink. Every other request keeps node's old five
@@ -2858,6 +2900,13 @@ function bodyDeadline(req) {
 // The Capacitor WebView origins of the Android and iOS app.
 const APP_ORIGINS = new Set(['https://localhost', 'capacitor://localhost', 'http://localhost']);
 
+// The operator keeps the one-time password reset (account recovery); the rest of the instance-wide
+// dashboard, the Coach and per-profile uploads are file-mode features.
+const productUnavailable = key => {
+  const path = key.slice(key.indexOf(' ') + 1);
+  if (path.startsWith('/api/admin/')) return path !== '/api/admin/user/password-reset';
+  return path.startsWith('/api/coach/') || path === '/api/coach' || path.startsWith('/api/media/') || path === '/api/media';
+};
 const server = http.createServer(async (req, res) => {
   bodyDeadline(req);
   // Same-origin (the deployed nginx-proxied web app) never triggers CORS, so this only matters
@@ -2899,6 +2948,10 @@ const server = http.createServer(async (req, res) => {
   // above stays a plain lookup, and so csrfOk and the catch-all see one name for every file.
   const mm = /^\/api\/media\/([0-9a-f]{64})$/.exec(url.pathname);
   if (mm) { key = req.method + ' /api/media/{hash}'; req.mediaHash = mm[1]; }
+  // Upstream surfaces the shared pilot does not offer (docs/dev/PILOT_ENDPOINT_MATRIX.md): an
+  // intentional answer before any handler, session or origin check runs, whether or not the
+  // route is registered in this configuration.
+  if (CONFIG.mode === 'product' && productUnavailable(key)) return json(res, 404, { error: 'not available on this service', code: 'unavailable' });
   const handler = routes[key];
   if (!handler) return json(res, 404, { error: 'not found' });
   // The origin check may read an account (a Bearer has to verify), so an unavailable store is a

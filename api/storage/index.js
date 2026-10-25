@@ -5,6 +5,8 @@ import { fileIdentityStore } from './identity-file.js';
 import { postgresIdentityStore } from './identity-postgres.js';
 import { memoryTransientStore } from './transient-memory.js';
 import { postgresTransientStore } from './transient-postgres.js';
+import { fileSubscriptionStore } from './subscriptions-file.js';
+import { postgresSubscriptionStore } from './subscriptions-postgres.js';
 
 export function createStateStore(config, { dataDir, cacheTtlMs, cacheMax, pool } = {}) {
   if (config.mode === 'file') return fileStateStore(dataDir, { cacheTtlMs, cacheMax });
@@ -35,4 +37,14 @@ export function createTransientStore(config, { db, save, pool } = {}) {
     return postgresTransientStore(pool);
   }
   throw new Error(`no transient store for mode "${config.mode}"`);
+}
+
+// Web Push subscriptions: db.json's `subs` in file mode, PostgreSQL in product mode.
+export function createSubscriptionStore(config, { db, save, pool } = {}) {
+  if (config.mode === 'file') return fileSubscriptionStore({ db, save });
+  if (config.mode === 'product') {
+    if (!pool) throw new Error('product mode needs a database pool');
+    return postgresSubscriptionStore(pool);
+  }
+  throw new Error(`no subscription store for mode "${config.mode}"`);
 }

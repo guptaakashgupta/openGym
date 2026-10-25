@@ -168,11 +168,13 @@ test('the three hot-path state reads all go through readStateCached', () => {
     const end = src.indexOf("\n  '", at + 1);
     return src.slice(at, end === -1 ? undefined : end);
   };
+  // Pilot: the push routes read through reminderState, which in file mode is readStateCached.
   for (const key of ['POST /api/push/test', 'POST /api/push/rest-timer']) {
     const body = handler(key);
-    assert.match(body, /readStateCached\(user\.id\)/, `${key} should read through the cache`);
+    assert.match(body, /reminderState\(user\.id\)/, `${key} should read through the cache`);
     assert.doesNotMatch(body, /readState\(user\.id\)/, `${key} parses the whole document again`);
   }
+  assert.match(src, /const reminderState = uid => \(CONFIG\.mode === 'file' \? readStateCached\(uid\)/);
   // Pilot: the state routes go through the member-state store (storage/state-file.js in file
   // mode). The revision poll is its readMemberRevision, which in the file store reads through the
   // same stat cache; GET /api/data and PUT want the real thing, uncached and strict (a file that

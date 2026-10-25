@@ -39,6 +39,15 @@ export function postgresStateStore(pool) {
       return { rev: revisionOf(rows[0].revision), ...(rows[0].write_id ? { wid: rows[0].write_id } : {}) };
     },
 
+    // What the reminder tick needs before it reads a whole document: the reminder settings and
+    // whether the Coach was agreed to, plus the revision to key a cache on. Null with no document.
+    async readSummary(uid) {
+      const { rows } = await pool.query(
+        `SELECT revision, document->'reminder' AS reminder, (document #> '{coach,consent,agreedAt}') IS NOT NULL AS consent
+           FROM member_states WHERE user_id = $1 AND document IS NOT NULL`, [uid]);
+      return rows[0] ? { rev: revisionOf(rows[0].revision), reminder: rows[0].reminder, consent: rows[0].consent } : null;
+    },
+
     async updateMemberState(uid, work) {
       return transaction(pool, async client => {
         const user = await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [uid]);

@@ -39,9 +39,9 @@ test('the operator issues a reset: old sessions end, the code works once, and it
   assert.equal((await h.req('GET', '/api/me', { cookie: redeem.cookie })).status, 200);
   assert.equal((await h.req('POST', '/api/login/password-reset', { body: { identifier: 'mei', code, next: GOOD }, ip: ip() })).status, 400);
 
-  const events = h.audit();
-  assert.ok(events.some(e => e.ev === 'admin.password.reset'));
-  assert.ok(!JSON.stringify(events).includes(code), 'the reset code never reaches the audit log');
+  const { rows: events } = await h.pool.query('SELECT ev, user_id, detail FROM audit_events');
+  assert.ok(events.some(e => e.ev === 'admin.password.reset' && e.user_id === 'op' && e.detail.tgt === 'u1'));
+  assert.ok(!JSON.stringify(events).includes(code), 'the reset code never reaches the audit trail');
 });
 
 test('a gym owner without operator authority cannot reset anyone', async t => {
