@@ -33,7 +33,7 @@ import {
 import { createDeviceLink, findDeviceLink, burnDeviceLink, dropDeviceLinks } from './device-link.js';
 import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE } from './media.js';
 import { effectiveRoutineId } from './queue.js';
-import { stampPut } from './sync-stamps.js';
+import { prepareWrite, validateWrite, forClient, records } from './state/prepare-write.js';
 import { atomicWrite as durableWrite } from './durable.js';
 import { excusedOn, nudgeFor, nudgeWindowOpen, toneOf } from './nudge.js';
 
@@ -180,9 +180,6 @@ function saveDb() {
 // Flushed before and after the rename (durable.js): a host reset must not bring back the file
 // the client was told had been replaced.
 function atomicWrite(file, content, mode) { durableWrite(file, content, mode); }
-// How many earlier write ids a document keeps (`_wids`, see PUT /api/data): a device that last
-// synced more writes ago than this merges on its next pull instead of taking the server's copy.
-const WID_KEEP = 50;
 const stateFile = uid => path.join(DATA, 'state-' + uid.replace(/[^a-zA-Z0-9_-]/g, '') + '.json');
 // When a profile last fetched its document (GET /api/data). The document's own `_ts` moves only
 // on a push, so a device that only ever read — a second phone, a profile that trains elsewhere
@@ -209,22 +206,8 @@ function readStateStrict(uid) {
   catch (e) { return e.code === 'ENOENT' ? null : UNREADABLE; }
   try { return JSON.parse(raw); } catch { return UNREADABLE; }
 }
-// A stored document as a client gets it: without the server's own notes `_unstamped` and `_prior`.
-function forClient(S) {
-  if (!S || typeof S !== 'object' || !('_unstamped' in S || '_prior' in S)) return S;
-  const { _unstamped, _prior, ...rest } = S;
-  return rest;
-}
-// An entry is an object a reader can dereference, and `records` is every entry of a stored
-// list. PUT /api/data drops the rest on the way in — a null workout, a routine that is a
-// number — and refuses a list that is not an array at all, but a file written before it did
-// answers to nobody, and the readers below walk those lists (`r.id`, `w.d`, `.slice()`). One
-// throw inside an admin route is a 500 for that whole profile: the drill-down never leaves
-// "Loading…", the Disable button lives inside it, and the account an operator opened the
-// dashboard to stop is exactly the one they then cannot. Answering with the entries that are
-// there is the honest reading of such a file — what was dropped carried nothing to show.
-const record = x => !!x && typeof x === 'object' && !Array.isArray(x);
-const records = v => (Array.isArray(v) ? v.filter(record) : []);
+// forClient (a stored document without the server's notes) and records (the readable entries of a
+// stored list) live in state/prepare-write.js with the write rules that define them.
 
 /* ---------- push notifications (Web Push / VAPID) ---------- */
 const vapidFile = path.join(DATA, 'vapid.json');
@@ -2428,84 +2411,18 @@ const routes = {
     const user = readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     const body = await readBody(req);
-    if (!body.state || typeof body.state !== 'object') return json(res, 400, { error: 'state required' });
-    // An object with nothing of the profile in it empties the document with the counter left
-    // intact: what lands on disk is `{"_rev":n+1}`, every routine, workout and weigh-in gone, and
-    // the next poll reports a revision the client accepts as its own. `_rev` and `_ts` do not
-    // count towards "something of the profile" — both are bookkeeping this route writes or echoes
-    // itself, so `{}` and `{"_rev":5}` are the same push and get the same refusal. Nothing
-    // shipped sends either: the web and mobile clients push a state built on DEF
-    // (frontend/src/store/useStore.js), which always carries its keys. An array is a document
-    // loss of its own and is left to the `invalid state` check below, which already refuses it.
-    if (!Array.isArray(body.state) && !Object.keys(body.state).some(k => k !== '_rev' && k !== '_ts')) {
-      return json(res, 400, { error: 'state required' });
-    }
-    // The reminder tick and the admin routes iterate these two on the server's side, so a truthy
-    // non-array would throw there on every pass for as long as it sat on disk. Absent or null is
-    // fine — every client fills its own defaults. An array is `typeof 'object'` but no document:
-    // `_rev` set on it is dropped by JSON.stringify, so the file would read back as rev 0 while
-    // the response claimed the next revision.
-    const list = v => v == null || Array.isArray(v);
-    if (Array.isArray(body.state) || !list(body.state.workouts) || !list(body.state.routines)) return json(res, 400, { error: 'invalid state' });
-    // The same readers walk every entry (`w.d`, `w.name`). They skip what is not an entry now
-    // (`records` above), but nothing should be storing one. Dropped, not refused:
-    // such an entry carries nothing worth keeping, whereas a 400 would strand a client whose own
-    // copy is already malformed — it keeps re-sending the same document and never syncs again.
-    for (const k of ['workouts', 'routines']) if (Array.isArray(body.state[k])) body.state[k] = records(body.state[k]);
-    // Conditional write: a `baseRev` that is not the current revision means this client last
-    // read an older document — another device has written since — and the copy it is about to
-    // push would silently drop that write. The current document travels back with the 409, so
-    // the client can merge and try again without a second request. No `baseRev` (a client from
-    // before revisions, or a deliberate replace such as a backup import) overwrites, as before.
+    // The write rules (validation, conditional write, reset markers, sync stamps, revision and
+    // write ids) are state/prepare-write.js. The request-only checks answer before the stored
+    // document is read, as they always did.
+    const invalid = validateWrite(body);
+    if (invalid) return json(res, invalid.status, invalid.body);
     // readState and atomicWrite are synchronous with nothing awaited between them, so the
     // compare-and-write is atomic for this process.
     const cur = readStateStrict(user.id);
     if (cur === UNREADABLE) { console.error('state file unreadable for', user.id); return json(res, 503, { error: 'state unreadable' }); }
-    const curRev = cur?._rev || 0;
-    // `_rev` is a counter, so after the data directory went back in time (a restored backup, a
-    // write lost to a power cut) the same number names a different document. Every write also gets
-    // a write id (`_wid`) and keeps its ancestors' (`_wids`): a client quoting the id it last saw
-    // (`baseWid`) is refused when the stored document is not that one, whatever the numbers say,
-    // and a client reading a document can tell whether it descends from its own (useStore pullState).
-    if ((body.baseRev != null && body.baseRev !== curRev) ||
-        (body.baseRev != null && typeof body.baseWid === 'string' && cur?._wid && body.baseWid !== cur._wid)) {
-      return json(res, 409, { error: 'conflict', rev: curRev, state: forClient(cur) });
-    }
-    delete body.state.active;              // in-progress workouts stay device-local
-    // "Reset everything" stamps the profile (`resetAt`, with `resetIds`: what it wiped). The stamp
-    // only moves forward: a write without it, or with an older one — a client from before it, a
-    // backup restored over the profile — keeps the stored stamp. Otherwise every device that saw
-    // the reset would take that copy for one older than the reset, and wipe it again on its next
-    // merge (frontend/src/lib/sync-merge.js).
-    const storedReset = Number(cur?.resetAt) || 0;
-    if (storedReset > (Number(body.state.resetAt) || 0)) {
-      body.state.resetAt = cur.resetAt;
-      if (cur.resetIds && typeof cur.resetIds === 'object') body.state.resetIds = cur.resetIds;
-      else delete body.state.resetIds;
-    }
-    // The records of removals and edits only grow, and what a writer that does not stamp its own
-    // changes (an older app, an API script) changed is stamped here, so it is neither wiped nor
-    // undone by the next device that merges (sync-stamps.js).
-    // A document nested too deep to compare is the bad request the stringify below refuses too.
-    const report = {};
-    try { stampPut(cur, body.state, { overRead: body.baseRev != null && body.baseRev === curRev, stamped: body.stamped === true, report }); }
-    catch (e) { if (e instanceof RangeError) return json(res, 400, { error: 'invalid state' }); throw e; }
-    body.state._rev = curRev + 1;          // server-owned; whatever the client sent is ignored
-    // A writer that does not stamp (an older app) takes the revision it is told for the document it
-    // sent, and only reads the profile again once the revision moves. When the server put back
-    // something it left out or set back (sync-stamps.js), the document stored is not that one: it
-    // goes in one revision further, so the writer's next check of the revision (every half minute)
-    // finds it moved and reads it, and its next push over the one it was told is a conflict to merge.
-    if (report.changed) body.state._rev = curRev + 2;
-    body.state._wids = [...(Array.isArray(cur?._wids) ? cur._wids : []), ...(cur?._wid ? [cur._wid] : [])]
-      .filter(x => typeof x === 'string').slice(-WID_KEEP);
-    body.state._wid = crypto.randomBytes(8).toString('hex');
-    // JSON.parse takes any nesting, JSON.stringify recurses and runs out of stack on a document
-    // nested some thousands deep. No client builds one; it is a bad request, not a server error.
-    let text;
-    try { text = JSON.stringify(body.state); }
-    catch (e) { if (e instanceof RangeError) return json(res, 400, { error: 'invalid state' }); throw e; }
-    atomicWrite(stateFile(user.id), text);
+    const prepared = prepareWrite(cur, body, { nextWriteId: () => crypto.randomBytes(8).toString('hex') });
+    if (prepared.status !== 200) return json(res, prepared.status, prepared.body);
+    atomicWrite(stateFile(user.id), prepared.text);
     // The stat cache cannot see this write on its own: mtime granularity is 4 ms here (ext4 on
     // this kernel — 3901 of 3999 back-to-back same-size writes shared one timestamp), and a
     // `_rev` going from 7 to 8 does not change the file's size, so two writes inside one 4 ms
@@ -2517,9 +2434,9 @@ const routes = {
     // referencing. Bookkeeping only: the state is already saved, so nothing here may turn a
     // successful write into an error.
     if (MEDIA_ON) {
-      try { MEDIA.noteState(user.id, body.state); } catch (e) { console.error('media noteState', e); }
+      try { MEDIA.noteState(user.id, prepared.state); } catch (e) { console.error('media noteState', e); }
     }
-    json(res, 200, { ok: true, ts: body.state._ts || null, rev: curRev + 1, wid: body.state._wid });
+    json(res, 200, prepared.body);
   },
 
   'GET /api/push/public-key': async (req, res) => json(res, 200, { key: vapid.publicKey }),
