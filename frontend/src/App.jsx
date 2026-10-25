@@ -62,6 +62,7 @@ import { PRODUCT } from './platform/config.js'
 // The phone's first screen: the product build pairs with its one built-in service.
 const MobileOnboarding = PRODUCT ? PilotOnboarding : UpstreamOnboarding
 import { gymRoutes } from './platform/Routes.jsx'
+import { startGymRoleRefresh } from './platform/useGym.js'
 
 // last known scrollY per route, so back-navigation can put the page where it was
 const scrollPositions = new Map()
@@ -334,6 +335,7 @@ function Page({ loc, render, under = false, scrollY = 0 }) {
 export default function App() {
   const boot = useStore(s => s.boot)
   useEffect(() => { boot() }, [boot])
+  useEffect(() => { if (PRODUCT) return startGymRoleRefresh() }, [])
   // Android system back — sheet, then page, then press-again-to-exit (see lib/back.js)
   useEffect(() => {
     let stop = null, gone = false

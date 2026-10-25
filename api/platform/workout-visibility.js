@@ -9,7 +9,7 @@
    own old session by hand as a new recording can share it. What this stops is everything else:
    imports, restores, edited history, upstream clients without the metadata, and anyone but the
    member choosing what becomes visible. */
-const MAX_EVENTS = 50;
+const MAX_EVENTS = 200;
 const ID_RE = /^[A-Za-z0-9_.:-]{1,64}$/;
 // A string id; RegExp.test would turn undefined into the text "undefined" and pass it.
 const isId = v => typeof v === 'string' && ID_RE.test(v);
@@ -18,7 +18,7 @@ const isId = v => typeof v === 'string' && ID_RE.test(v);
 // Returns an error message, or null.
 export function recordingsProblem(raw) {
   if (raw === undefined) return null;
-  if (!Array.isArray(raw) || raw.length > MAX_EVENTS) return 'platformRecordings must be a list of at most 50 events';
+  if (!Array.isArray(raw) || raw.length > MAX_EVENTS) return 'platformRecordings must be a list of at most 200 events';
   for (const e of raw) {
     if (!e || typeof e !== 'object' || !isId(e.eventId) || !isId(e.workoutId) || !isId(e.membershipId))
       return 'each recording needs eventId, workoutId and membershipId';

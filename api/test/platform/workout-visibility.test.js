@@ -41,6 +41,18 @@ test('a new recording reported with its membership becomes visible to the gym', 
   assert.deepEqual(await visible(), ['w-new']);
 });
 
+test('60 offline recordings in one sync all become visible to the gym', async t => {
+  const { put, visible, join } = await world(t);
+  const m = await join();
+  const workouts = Array.from({ length: 60 }, (_, i) => wk('w' + String(i).padStart(2, '0')));
+  const events = workouts.map((w, i) => ev('e' + i, w.id, m.id));
+  const r = await put(workouts, events);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.platformRecordings.length, 60);
+  assert.ok(r.body.platformRecordings.every(x => x.result === 'granted'));
+  assert.deepEqual(await visible(), workouts.map(w => w.id));
+});
+
 test('workouts from before joining stay private, even with an event naming the membership', async t => {
   const { put, visible, join } = await world(t);
   await put([wk('w-old', '2026-01-01')]);
@@ -133,5 +145,5 @@ test('malformed recording metadata is refused before anything is written', async
   await join();
   assert.equal((await put([wk('w1')], 'nope')).status, 400);
   assert.equal((await put([wk('w1')], [{ eventId: 1 }])).status, 400);
-  assert.equal((await put([wk('w1')], Array.from({ length: 51 }, (_, i) => ev('e' + i, 'w1', 'm')))).status, 400);
+  assert.equal((await put([wk('w1')], Array.from({ length: 201 }, (_, i) => ev('e' + i, 'w1', 'm')))).status, 400);
 });

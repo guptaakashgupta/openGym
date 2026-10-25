@@ -13,8 +13,10 @@ import { join } from 'node:path'
 vi.mock('../lib/api.js', async importOriginal => ({ ...(await importOriginal()), api: vi.fn() }))
 const { api } = await import('../lib/api.js')
 const { useStore } = await import('../store/useStore.js')
-const { useGym } = await import('./useGym.js')
+const { useGym, startGymRoleRefresh } = await import('./useGym.js')
 const { RequireRole } = await import('./Routes.jsx')
+const { ctxOf, forgetAccount } = await import('./workout-context.js')
+const { read } = await import('./workout-outbox.js')
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 const roles = (...r) => ({ roles: r.map(([gymId, role]) => ({ gymId, gymName: gymId, role, membershipId: 'm-' + gymId + role })) })
@@ -23,6 +25,27 @@ const signIn = id => act(() => { useStore.setState({ user: id ? { id, name: id }
 beforeEach(() => { api.mockReset(); useGym.getState().reset(); useStore.setState({ user: null }) })
 
 describe('the gym context', () => {
+  it('loads member context on app start and sign-in without opening a gym screen, then refreshes it on return', async () => {
+    useStore.setState({ ready: true })
+    signIn('a')
+    let current = roles(['g1', 'member'])
+    api.mockImplementation(async path => path === '/api/platform/me' ? current : {})
+    const stop = startGymRoleRefresh()
+    try {
+      await act(async () => {})
+      expect(useGym.getState().roles[0].membershipId).toBe('m-g1member')
+      signIn(null)
+      current = roles(['g2', 'member'])
+      signIn('a')
+      await act(async () => {})
+      expect(useGym.getState().roles[0].membershipId).toBe('m-g2member')
+      current = roles(['g3', 'member'])
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+      await act(async () => { document.dispatchEvent(new Event('visibilitychange')) })
+      expect(useGym.getState().roles[0].membershipId).toBe('m-g3member')
+      expect(read(ctxOf(useStore.getState())).membership).toBe('m-g3member')
+    } finally { stop(); forgetAccount(ctxOf(useStore.getState())) }
+  })
   it('loads roles for the signed-in account from the server and keeps them out of storage', async () => {
     signIn('a')
     api.mockResolvedValueOnce(roles(['g1', 'owner']))

@@ -107,12 +107,14 @@ describe('membership context for new recordings', () => {
     expect(sent(m, A)).toHaveLength(1)
   })
 
-  it('sends at most 50 events per write and keeps a bounded backlog', async () => {
+  it('sends 60 offline workouts in one write and keeps a bounded backlog', async () => {
     const m = await fresh()
     m.rememberMembership(A, 'mem1')
-    for (let i = 0; i < 260; i++) { m.recordingStarted(A, 'w' + i); m.recordingFinished(A, 'w' + i) }
+    for (let i = 0; i < 60; i++) { m.recordingStarted(A, 'w' + i); m.recordingFinished(A, 'w' + i) }
+    expect(sent(m, A)).toHaveLength(60)
+    for (let i = 60; i < 260; i++) { m.recordingStarted(A, 'w' + i); m.recordingFinished(A, 'w' + i) }
     const out = sent(m, A)
-    expect(out).toHaveLength(50)
+    expect(out).toHaveLength(200)
     expect(out[0].workoutId).toBe('w60')   // the oldest beyond the backlog of 200 became private
   })
 

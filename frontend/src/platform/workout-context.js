@@ -18,7 +18,7 @@ export { ready, flushed }
 // The signed-in account of the app's store, and the server it syncs with; null when signed out.
 export const ctxOf = st => (st?.user?.id ? { account: st.user.id, server: st.sync?.server ?? null } : null)
 
-const SEND = 50    // the server's limit per write
+const SEND = 200   // the server's limit per write; the full retained backlog fits one PUT
 const KEEP = 200   // beyond it the oldest events are dropped: those workouts stay private
 
 const recOf = ctx => read(ctx) || { membership: null, recording: null, events: [] }
