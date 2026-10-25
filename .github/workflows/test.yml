@@ -15,7 +15,9 @@ on:
       - 'api/coach/prompts/**'
       - '.github/workflows/test.yml'
   push:
-    branches: [main, coach]
+    # pilot/** and integration/**: the gym pilot's branches run the upstream checks too
+    # (pilot-test.yml adds the product's own); none of them publishes anything.
+    branches: [main, coach, 'pilot/**', 'integration/**']
     paths:
       - 'frontend/**'
       - 'api/**'
@@ -111,6 +113,9 @@ jobs:
       - run: npm ci
       - run: node scripts/build-api-docs.mjs --check
       - run: node api/scripts/check-core-loadable.mjs
+      # The product modules (platform, storage, state, shared) under plain node: api/shared is
+      # imported by the frontend under Vite as well.
+      - run: node api/scripts/check-platform-loadable.mjs
 
   # Builds *and runs* both image targets. Building alone would not have caught the api image
   # shipping without coach/ — that image built perfectly and exited on boot. So each target has

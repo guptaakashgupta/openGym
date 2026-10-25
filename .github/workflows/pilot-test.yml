@@ -1,0 +1,147 @@
+# The gym pilot's product checks, beside the upstream ones in test.yml (docs/dev/PILOT_COMPATIBILITY.md):
+# the PostgreSQL-backed storage and platform suites (client compatibility included), the product
+# modules under plain node, the product web build and its gates, and both product images built and
+# run — the API booted in product mode against a real database. Nothing here publishes, signs or
+# mirrors anything; publication stays in its own workflows, which pilot branches never trigger.
+name: Pilot
+
+on:
+  pull_request:
+    paths:
+      - 'api/**'
+      - 'frontend/**'
+      - 'deploy/pilot/**'
+      - 'web/**'
+      - 'scripts/catalogue/stage-media.mjs'
+      - '.github/workflows/pilot-test.yml'
+  push:
+    branches: ['pilot/**', 'integration/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pilot-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The same disposable database deploy/pilot/compose.test.yml starts locally.
+  TEST_DATABASE_URL: postgres://pilot_test:pilot_test@localhost:5432/pilot_test
+
+jobs:
+  platform:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: pilot_test
+          POSTGRES_PASSWORD: pilot_test
+          POSTGRES_DB: pilot_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U pilot_test -d pilot_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+      - run: npm ci --omit=optional
+        working-directory: api
+      - run: node api/scripts/check-platform-loadable.mjs
+      - run: npm run test:storage
+        working-directory: api
+      # Includes client-compat.test.js: the requests of the current and the previous supported
+      # client build, replayed against this server.
+      - run: npm run test:platform
+        working-directory: api
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build:pilot
+        working-directory: frontend
+        env:
+          PILOT_PRODUCT: ../deploy/pilot/product.example.json
+      - run: npx vitest run scripts/check-pilot-bundle.test.mjs
+        working-directory: frontend
+
+  # An image build alone is not proof of a runnable service: the API image runs its migrations
+  # and answers its health check in product mode against PostgreSQL, and the product web image is
+  # inspected for what it must and must not carry.
+  images:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: pilot_test
+          POSTGRES_PASSWORD: pilot_test
+          POSTGRES_DB: pilot_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U pilot_test -d pilot_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: what the images will say they are
+        id: ids
+        run: |
+          echo "product=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "upstream=$(git merge-base HEAD origin/main)" >> "$GITHUB_OUTPUT"
+          echo "schema=$(ls api/migrations | sort | tail -1 | cut -d_ -f1)" >> "$GITHUB_OUTPUT"
+      - run: >-
+          docker build --target default
+          --build-arg PRODUCT_SHA=${{ steps.ids.outputs.product }}
+          --build-arg UPSTREAM_SHA=${{ steps.ids.outputs.upstream }}
+          --build-arg SCHEMA_VERSION=${{ steps.ids.outputs.schema }}
+          -t opengym-api:pilot ./api
+      - name: the API image migrates and boots in product mode
+        # NODE_ENV=ci: this throwaway database has no TLS, which production refuses
+        # (platform/config.js; config.test.js covers that refusal).
+        run: |
+          DB=postgres://pilot_test:pilot_test@localhost:5432/pilot_test
+          docker run --rm --network host -e DATABASE_URL=$DB opengym-api:pilot node scripts/migrate.mjs
+          docker run -d --name api-pilot --network host -e NODE_ENV=ci -e OPENGYM_MODE=product \
+            -e DATABASE_URL=$DB -e SESSION_SECRET=$(openssl rand -hex 32) -e DATA_DIR=/data -e PORT=3000 \
+            -e RP_ID=localhost -e ORIGIN=http://localhost:8080 opengym-api:pilot
+          for i in $(seq 1 30); do curl -fsS http://localhost:3000/api/health >/dev/null 2>&1 && break; sleep 1; done
+          curl -fsS http://localhost:3000/api/health | tee /dev/stderr | grep -q '"database"'
+          docker logs api-pilot
+          docker rm -f api-pilot
+      - name: the API image still boots in file mode
+        run: |
+          docker run -d --name api-file -e DATA_DIR=/data -p 3001:3000 opengym-api:pilot
+          for i in $(seq 1 30); do curl -fsS http://localhost:3001/api/config >/dev/null 2>&1 && break; sleep 1; done
+          curl -fsS http://localhost:3001/api/config | grep -q '"invite_only"'
+          docker rm -f api-file
+      - name: the API image names its product, upstream and schema
+        run: |
+          docker inspect opengym-api:pilot --format '{{json .Config.Labels}}' | tee /dev/stderr \
+            | grep -q '"org.opengym.pilot.schema-version":"${{ steps.ids.outputs.schema }}"'
+      - run: >-
+          docker build -f web/Dockerfile
+          --build-arg PILOT_PRODUCT=deploy/pilot/product.example.json
+          --build-arg PRODUCT_SHA=${{ steps.ids.outputs.product }}
+          --build-arg UPSTREAM_SHA=${{ steps.ids.outputs.upstream }}
+          --build-arg SCHEMA_VERSION=${{ steps.ids.outputs.schema }}
+          -t opengym-web:pilot .
+      - name: the product web image carries its stamp and no exercise media
+        run: |
+          docker run --rm opengym-web:pilot test -f /usr/share/nginx/html/pilot-build.json
+          docker run --rm opengym-web:pilot test -f /usr/share/nginx/html/OPEN-SOURCE.txt
+          ! docker run --rm opengym-web:pilot test -e /usr/share/nginx/html/exercise-media

@@ -54,6 +54,8 @@ jobs:
 
   deploy:
     needs: build
+    # main only: a manual run from another branch builds but never replaces the public site.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

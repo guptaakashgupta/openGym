@@ -82,6 +82,15 @@ LABEL maintainer="Duarte Santos https://gitlab.com/DuarteSantos8" \
     org.opencontainers.image.revision=$VCS_REF \
     org.opencontainers.image.created=$BUILD_DATE
 
+# The gym pilot's product images (.github/workflows/pilot-test.yml) name the product commit, the
+# upstream commit it is based on and the newest schema migration they carry. Empty upstream.
+ARG PRODUCT_SHA=""
+ARG UPSTREAM_SHA=""
+ARG SCHEMA_VERSION=""
+LABEL org.opengym.pilot.product-sha=$PRODUCT_SHA \
+    org.opengym.pilot.upstream-sha=$UPSTREAM_SHA \
+    org.opengym.pilot.schema-version=$SCHEMA_VERSION
+
 COPY web/nginx.conf.template /etc/nginx/templates/default.conf.template
 # Stops the container at start-up on a BASE_PATH the config cannot serve ("/gym/", "gym"), instead
 # of a server that 404s under the prefix. nginx's entrypoint runs these scripts in order; 05 is

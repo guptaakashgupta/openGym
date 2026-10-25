@@ -23,6 +23,9 @@ permissions:
 
 jobs:
   build:
+    # Upstream's own refs only: a manual run from any other branch (the gym pilot's included)
+    # must never push images under these names (docs/dev/PILOT_COMPATIBILITY.md).
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     strategy:
       matrix:

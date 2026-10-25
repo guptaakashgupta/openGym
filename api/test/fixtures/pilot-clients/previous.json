@@ -1,0 +1,11 @@
+{
+  "client": "pilot-previous",
+  "description": "The previous supported pilot client: personal sync without new-recording events (as an upstream client does), the gym context and plans. It knows nothing of export or recordings, and its writes must still be stored whole.",
+  "requests": [
+    { "as": "member", "method": "PUT", "path": "/api/data", "body": { "state": { "workouts": [{ "id": "pw1", "d": "2026-10-19" }], "olderClientField": [1, 2, 3] } }, "status": 200, "keys": ["rev"] },
+    { "as": "member", "method": "GET", "path": "/api/data", "status": 200, "keys": ["state"], "keepsField": "olderClientField" },
+    { "as": "member", "method": "GET", "path": "/api/platform/me", "status": 200, "keys": ["roles"], "itemKeys": { "roles": ["gymId", "gymName", "role", "membershipId"] } },
+    { "as": "trainer", "method": "GET", "path": "/api/platform/clients", "status": 200, "keys": ["clients"], "itemKeys": { "clients": ["membershipId", "name"] } },
+    { "as": "member", "method": "GET", "path": "/api/platform/proposals", "status": 200, "keys": ["received"] }
+  ]
+}

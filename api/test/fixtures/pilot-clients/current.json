@@ -1,0 +1,14 @@
+{
+  "client": "pilot-current",
+  "description": "What the current pilot client sends and reads: personal sync with new-recording events and fields this server does not know, the gym context, a trainer's client list and progress, plans, the revision check before accepting, and export.",
+  "requests": [
+    { "as": "member", "method": "PUT", "path": "/api/data", "body": { "state": { "workouts": [{ "id": "cw1", "d": "2026-10-20", "entries": [{ "id": "0025", "sets": [{ "w": 60, "r": 5, "done": true }] }] }], "futureClientField": { "kept": true } }, "stamped": true, "platformRecordings": [{ "eventId": "ev-current-1", "workoutId": "cw1", "membershipId": "{memberMembershipId}" }] }, "status": 200, "keys": ["rev", "platformRecordings"] },
+    { "as": "member", "method": "GET", "path": "/api/data", "status": 200, "keys": ["state"], "keepsField": "futureClientField" },
+    { "as": "member", "method": "GET", "path": "/api/data/rev", "status": 200, "keys": ["rev"] },
+    { "as": "member", "method": "GET", "path": "/api/platform/me", "status": 200, "keys": ["roles"], "itemKeys": { "roles": ["gymId", "gymName", "role", "membershipId"] } },
+    { "as": "trainer", "method": "GET", "path": "/api/platform/clients", "status": 200, "keys": ["clients"], "itemKeys": { "clients": ["membershipId", "name"] } },
+    { "as": "trainer", "method": "GET", "path": "/api/platform/clients/{memberMembershipId}/workouts", "status": 200, "keys": ["workouts"], "itemKeys": { "workouts": ["id", "date", "exercises"] } },
+    { "as": "member", "method": "GET", "path": "/api/platform/proposals", "status": 200, "keys": ["received"] },
+    { "as": "member", "method": "GET", "path": "/api/platform/export", "status": 200, "keys": ["format", "account", "state", "memberships", "proposals"] }
+  ]
+}
