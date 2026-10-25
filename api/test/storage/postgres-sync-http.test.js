@@ -19,6 +19,11 @@ const mintSession = uid => {
   return payload + '.' + crypto.createHmac('sha256', SECRET).update(payload).digest('base64url');
 };
 
+// Servers of the current test, stopped (and exited) before its schema is dropped.
+const running = [];
+const stopAll = () => Promise.all(running.splice(0).map(c => (c.exitCode !== null || c.signalCode !== null)
+  ? null : new Promise(r => { c.once('exit', r); c.kill('SIGKILL'); })));
+
 async function boot(t, extraEnv) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pilot-http-'));
   fs.writeFileSync(path.join(dataDir, 'secret'), SECRET, { mode: 0o600 });
@@ -27,6 +32,7 @@ async function boot(t, extraEnv) {
     env: { ...process.env, PORT: '0', DATA_DIR: dataDir, ORIGIN: 'http://localhost:8080', RP_ID: 'localhost', ...extraEnv } });
   let log = '';
   child.stdout.on('data', d => log += d); child.stderr.on('data', d => log += d);
+  running.push(child);
   t.after(() => { child.kill('SIGKILL'); fs.rmSync(dataDir, { recursive: true, force: true }); });
   const base = `http://127.0.0.1:${await boundPort(child, () => log)}`;
   const headers = { Cookie: `gymsid=${mintSession('u1')}`, 'Content-Type': 'application/json' };
@@ -68,7 +74,7 @@ function normalise(answers) {
 }
 
 test('file mode and PostgreSQL product mode answer the same sync conversation identically', async t => {
-  const { pool, schema } = await testSchema(t, { migrated: true });
+  const { pool, schema } = await testSchema(t, { migrated: true, beforeDrop: stopAll });
   await pool.query("INSERT INTO users (id) VALUES ('u1')");
   const url = new URL(testDatabaseUrl());
   url.searchParams.set('options', `-c search_path=${schema}`);
@@ -87,7 +93,7 @@ test('file mode and PostgreSQL product mode answer the same sync conversation id
 });
 
 test('product mode answers a NUL-carrying push with a 400 and keeps the stored document', async t => {
-  const { pool, schema } = await testSchema(t, { migrated: true });
+  const { pool, schema } = await testSchema(t, { migrated: true, beforeDrop: stopAll });
   await pool.query("INSERT INTO users (id) VALUES ('u1')");
   const url = new URL(testDatabaseUrl());
   url.searchParams.set('options', `-c search_path=${schema}`);

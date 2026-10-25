@@ -19,7 +19,11 @@ const b64u = b => Buffer.from(b).toString('base64url');
 const sha = b => crypto.createHash('sha256').update(b).digest();
 
 export async function bootProduct(t, { env = {} } = {}) {
-  const { pool, schema } = await testSchema(t, { migrated: true });
+  const children = [];
+  // Every server of this schema is stopped, and has exited, before the schema is dropped.
+  const stopAll = () => Promise.all(children.map(c => (c.exitCode !== null || c.signalCode !== null)
+    ? null : new Promise(r => { c.once('exit', r); c.kill('SIGKILL'); })));
+  const { pool, schema } = await testSchema(t, { migrated: true, beforeDrop: stopAll });
   const secret = crypto.randomBytes(32).toString('hex');   // product mode signs with this
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pilot-auth-'));
   // A different file secret: a session that verifies proves the managed one is in use.
@@ -43,9 +47,9 @@ export async function bootProduct(t, { env = {} } = {}) {
         PASSWORD_LOGIN: '1', TRUST_PROXY: '1', INVITE_ONLY: '', ADMIN_UIDS: '', AUDIT_LOG: '1', ...env, DATABASE_URL: databaseUrl,
       }
     });
+    children.push(child);
     child.stdout.on('data', d => h.log += d);
     child.stderr.on('data', d => h.log += d);
-    t.after(() => child.kill('SIGKILL'));
     return { child, api: `http://127.0.0.1:${await boundPort(child, () => h.log)}` };
   }
   async function start() { Object.assign(h, await spawnOne()); }

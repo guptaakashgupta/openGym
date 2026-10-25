@@ -19,8 +19,10 @@ export function testDatabaseUrl(env = process.env) {
 
 const SCHEMA_RE = /^t_[0-9a-f]{16}$/;
 
-/* A pool whose connections all use a fresh schema; `migrated` also applies api/migrations. */
-export async function testSchema(t, { migrated = false } = {}) {
+/* A pool whose connections all use a fresh schema; `migrated` also applies api/migrations.
+   `beforeDrop` runs first in teardown: whatever else uses the schema (a spawned server) has to be
+   gone before DROP SCHEMA, or the drop waits on, or deadlocks with, its queries. */
+export async function testSchema(t, { migrated = false, beforeDrop } = {}) {
   const url = testDatabaseUrl();
   const schema = 't_' + crypto.randomBytes(8).toString('hex');
   if (!SCHEMA_RE.test(schema)) throw new Error('bad schema name');
@@ -28,6 +30,7 @@ export async function testSchema(t, { migrated = false } = {}) {
   await admin.query(`CREATE SCHEMA "${schema}"`);
   const pool = createPool(url, { searchPath: schema });
   t.after(async () => {
+    if (beforeDrop) await beforeDrop();
     await pool.end();
     await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
     await admin.end();
