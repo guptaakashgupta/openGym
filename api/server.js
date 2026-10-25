@@ -2174,7 +2174,8 @@ const routes = {
     // were not signed in when you asked", and would re-ask on every sign-in on every instance
     // that has no Coach. The key's absence is that answer.
     json(res, 200, {
-      invite_only: INVITE_ONLY, allow_guest: ALLOW_GUEST,
+      // Product mode: signup needs a gym invitation unless the operator opened it (PILOT_OPEN_SIGNUP).
+      invite_only: INVITE_ONLY || (CONFIG.mode === 'product' && !PILOT_OPEN_SIGNUP), allow_guest: ALLOW_GUEST,
       // Only when on, so an instance without passwords answers exactly as it did before (#118).
       ...(PASSWORD_LOGIN ? { password_login: true } : {}),
       // Public: the sign-in screen is the first thing that reads it.
@@ -2927,7 +2928,11 @@ const PLATFORM = CONFIG.mode === 'product' ? platformRoutes({ db: POOL, json, re
 // Product mode has no global signup: a new account needs a gym invitation (platform/invitations.js),
 // which the signup redeems. PILOT_OPEN_SIGNUP=1 is the operator's bootstrap switch, off by default.
 const PILOT_OPEN_SIGNUP = /^(1|true|yes|on)$/i.test(process.env.PILOT_OPEN_SIGNUP || '');
-const signupInvite = body => (typeof body.invite === 'string' && body.invite.length <= 200 ? body.invite : '');
+// The invitation rides in `invite`, or in the sign-in screen's own invite-code field (`code`).
+const signupInvite = body => {
+  const v = typeof body.invite === 'string' && body.invite ? body.invite : CONFIG.mode === 'product' && typeof body.code === 'string' ? body.code.trim() : '';
+  return v.length <= 200 ? v : '';
+};
 // Null when this signup may go ahead; otherwise the refusal has been answered.
 async function refuseSignup(req, res, invite) {
   if (CONFIG.mode !== 'product' || (!invite && PILOT_OPEN_SIGNUP)) return false;

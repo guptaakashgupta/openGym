@@ -7,6 +7,8 @@ const del = path => api(path, { method: 'DELETE', body: '{}' })
 const id = s => encodeURIComponent(s)
 
 export const platformMe = () => api('/api/platform/me')
+// The revision the server holds now: what a plan acceptance is checked against.
+export const dataRev = () => api('/api/data/rev')
 export const gymMembers = gymId => api(`/api/platform/gyms/${id(gymId)}/members`)
 export const gymInvitations = gymId => api(`/api/platform/gyms/${id(gymId)}/invitations`)
 export const createInvitation = (gymId, role) => post(`/api/platform/gyms/${id(gymId)}/invitations`, { role })

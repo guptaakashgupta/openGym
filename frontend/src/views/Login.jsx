@@ -11,12 +11,15 @@ import { Button, Segmented } from '../components/ui.jsx'
 import { askAddDeviceData } from '../sheets.jsx'
 import { passwordOn, PasswordRegisterForm, openPasswordSignIn } from '../components/PasswordAuth.jsx'
 import { openDeviceLinkRedeem } from '../components/Passkeys.jsx'
+import { PRODUCT } from '../platform/config.js'
+import { pendingJoinToken } from '../platform/join-token.js'
 
 function RegisterSheet({ close }) {
   const { setUser, pushState, pullState, loadConfig } = useStore()
   const config = useStore(s => s.config)
   const [name, setName] = useState('')
-  const [code, setCode] = useState('')
+  // Gym pilot: the invitation from a join link, kept while signing up (platform/join-token.js).
+  const [code, setCode] = useState(() => (PRODUCT ? pendingJoinToken() || '' : ''))
   const inviteOnly = !!config?.invite_only
   // A password is offered only where the instance allows it (#118), and is the only choice in a
   // browser that cannot make a passkey. Where both work, the passkey stays the first one.
@@ -57,7 +60,7 @@ function RegisterSheet({ close }) {
     {inviteOnly && <>
       <div style={{ height: 10 }} />
       <input className="input" placeholder={t('Invite code')} maxLength={40} value={code}
-        onChange={e => setCode(e.target.value.toUpperCase())} style={{ letterSpacing: '.14em', fontWeight: 600, textAlign: 'center' }} />
+        onChange={e => setCode(PRODUCT ? e.target.value.trim() : e.target.value.toUpperCase())} style={{ letterSpacing: '.14em', fontWeight: 600, textAlign: 'center' }} />
       <div className="dim small" style={{ marginTop: 6 }}>{t('This app is invite-only. Enter the code you were given.')}</div>
     </>}
     <div style={{ height: 12 }} />

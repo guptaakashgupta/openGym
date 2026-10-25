@@ -146,3 +146,12 @@ test('an operator owner invitation signs its holder up as the owner of the new g
   assert.deepEqual((await h.req('GET', '/api/platform/me', { cookie: r.cookie })).body.roles.map(x => [x.gymId, x.role]), [[C.id, 'owner']]);
   assert.equal((await h.req('GET', '/api/me', { cookie: r.cookie })).body.user.admin, false, 'a gym owner is not the platform operator');
 });
+
+test('the sign-in screen is told an invitation is needed, and may send it as the invite code', async t => {
+  const { h, A } = await world(t);
+  assert.equal((await h.req('GET', '/api/config')).body.invite_only, true);
+  const { token } = await createInvitation(h.pool, { gymId: A.id, role: 'member', createdBy: 'ownA' });
+  const r = await h.req('POST', '/api/register/password', { body: { name: 'Codey', password: GOOD, code: token }, ip: ip() });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual((await h.req('GET', '/api/platform/me', { cookie: r.cookie })).body.roles.map(x => x.role), ['member']);
+});

@@ -10,6 +10,9 @@ import { PRODUCT } from './config.js'
 import { t } from '../lib/i18n.js'
 import Owner from './Owner.jsx'
 import Trainer from './Trainer.jsx'
+import JoinGym from './JoinGym.jsx'
+import Proposals from './Proposals.jsx'
+import './join-token.js'   // keeps an invitation link across sign-in (read at load)
 
 // Loads the roles for the signed-in account when they are not this account's, or not loaded yet.
 function useGymRoles() {
@@ -40,7 +43,7 @@ export function GymHome() {
     <div className="pad">
       <h1>{t('Gym')}</h1>
       {!gym.roles.length && <p>{t('You are not part of a gym yet. Ask your gym for an invitation.')}</p>}
-      {member && <p>{t('Member of {0}', member.gymName)}</p>}
+      {member && <p>{t('Member of {0}', member.gymName)} · <Link to="/gym/proposals">{t('Plans from your trainer')}</Link></p>}
       {owner.map(r => <p key={r.gymId}><Link to={`/gym/owner/${encodeURIComponent(r.gymId)}`}>{t('Manage {0}', r.gymName)}</Link></p>)}
       {trainer && <p><Link to="/gym/trainer">{t('My clients')}</Link></p>}
     </div>
@@ -52,6 +55,8 @@ export function gymRoutes() {
   return (
     <>
       <Route path="/gym" element={<GymHome />} />
+      <Route path="/gym/join" element={<JoinGym />} />
+      <Route path="/gym/proposals" element={<Proposals />} />
       <Route path="/gym/owner/:gymId" element={<RequireRole role="owner"><Owner /></RequireRole>} />
       <Route path="/gym/trainer" element={<RequireRole role="trainer"><Trainer /></RequireRole>} />
     </>
