@@ -32,6 +32,7 @@ import {
 } from './passkeys-store.js';
 import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE } from './media.js';
 import { createProductMedia } from './platform/uploads.js';
+import { pruneAudit, scrubAudit } from './platform/lifecycle.js';
 import { objectStoreFrom } from './storage/objects.js';
 import { effectiveRoutineId } from './queue.js';
 import { prepareWrite, validateWrite, forClient, records } from './state/prepare-write.js';
@@ -1005,9 +1006,14 @@ function audit(req, ev, f = {}) {
   // Amortized: a 5000-event cap rewrites the file once per ~1250 events.
   if (AUDIT_MAX && ++auditCount > AUDIT_MAX * 1.25) compactAudit();
 }
-// Product mode writes the trail to PostgreSQL (storage/audit-postgres.js); retention there is
-// the operator's scheduled job, not this compaction.
+// Product mode writes the trail to PostgreSQL (storage/audit-postgres.js); retention there is an
+// hourly delete of events older than AUDIT_DAYS (platform/lifecycle.js), not this compaction.
 const AUDIT_SINK = AUDIT_ON && CONFIG.mode === 'product' ? postgresAuditSink(POOL) : null;
+if (AUDIT_SINK) {
+  const prune = () => pruneAudit(POOL, { days: AUDIT_DAYS }).catch(e => console.error('audit prune failed', e.message));
+  setInterval(prune, 3600000).unref();
+  setTimeout(prune, 5 * 60000).unref();
+}
 if (AUDIT_ON && !AUDIT_SINK) {
   compactAudit();                                // prune on boot, seed auditSeq/auditCount
   setInterval(compactAudit, 3600000).unref();    // honour AUDIT_DAYS on an idle instance too
@@ -1372,6 +1378,8 @@ async function removeEmail(req, res, user, body) {
 async function removeAccount(u) {
   // The account and its passkeys (and, in product mode, its training history) in one write.
   await IDENTITY.deleteUser(u.id);
+  // Product mode: the audit trail keeps the account id, not the person's name (platform/lifecycle.js).
+  if (CONFIG.mode === 'product') await scrubAudit(POOL, u.id);
   await SUBS.removeUser(u.id);
   await TRANSIENT.dropDeviceLinks(u.id);
   await TRANSIENT.dropPairings(u.id);
@@ -2423,7 +2431,7 @@ const routes = {
     if (!(await stillSignedIn(req, user))) return json(res, 401, { error: 'not signed in' });
     if (lastAdmin()) return refuseLastAdmin();
     await removeAccount(user);
-    audit(req, 'auth.account.delete', { user, msg: proof });
+    audit(req, 'auth.account.delete', { user: CONFIG.mode === 'product' ? { id: user.id } : user, msg: proof });
     json(res, 200, { ok: true }, { 'Set-Cookie': clearCookie });
   },
 

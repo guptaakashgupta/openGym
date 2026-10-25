@@ -17,6 +17,7 @@ Inventory taken 25 Oct 2026 with
 | `GET /api/me`, `POST /api/logout`, `POST /api/logout/all` | Supported | `users` (identity-postgres.js) |
 | `POST /api/register/{options,verify}`, `POST /api/login/{options,verify}` | Supported. Signup (passkey or password) needs a gym invitation (`invite`) and redeems it; `PILOT_OPEN_SIGNUP=1` is the operator's bootstrap switch | `users`, `credentials`, `auth_challenges`, `gym_invitations` |
 | `/api/platform/*` (me, members, assignments, memberships/end, clients, clients/:id/workouts, invitations, invitations/preview, invitations/redeem) | Product only; scoped by current membership (platform/routes.js) | `gyms`, `gym_memberships`, `trainer_assignments`, `gym_invitations` |
+| `GET /api/platform/export` | Product only; the caller's own data, format `opengym-pilot-export/1` (platform/lifecycle.js, docs/ops/PILOT_DATA_RECOVERY.md) | `member_states`, `gym_memberships`, `plan_proposal_versions`, `workout_visibility` |
 | `POST /api/register/password`, `POST /api/login/password`, `POST /api/login/password-reset` | Supported when `PASSWORD_LOGIN` is on | `users`, `login_identifiers` |
 | `GET/POST/DELETE /api/account/password`, `POST/DELETE /api/account/email` | Supported | `users`, `login_identifiers` |
 | `GET/POST/DELETE /api/account/passkeys*`, `POST /api/account/device-link`, `POST /api/device-link/{options,verify}` | Supported | `credentials`, `device_links` |
@@ -42,7 +43,7 @@ Authority: `isAdmin` in product mode is `ADMIN_UIDS` only; an `admin`, `owner`, 
 | Rest timers (`scheduleRestTimer`) | Supported, process-local `setTimeout` |
 | Live presence (`presence` map) | Supported, process-local |
 | Challenge, pairing and device-link expiry | Database rows expire; expired rows pruned on insert |
-| Audit compaction (`compactAudit`) | Not run. Events go to `audit_events`; retention is an operator job (plan task 23) |
+| Audit compaction (`compactAudit`) | Not run. Events go to `audit_events`; hourly `pruneAudit` deletes events older than `AUDIT_DAYS`; account deletion scrubs names and addresses (`scrubAudit`) |
 | Media sweep (`mediaSweepAll`) | With `OBJECT_STORE`: hourly grace sweep from `unreferenced_since`, then the resumable deletion queue and stale pending uploads (`cleanup()`). Without: not run |
 | Coach cadence and warm-up | Not started |
 | MCP server (`mcp/`) | Not offered: it reads a `DATA_DIR` that holds no state in product mode |

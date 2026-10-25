@@ -55,6 +55,14 @@ async function insertCredential(client, cred) {
   }
 }
 
+// One account with its claims and credentials, inside the caller's transaction: the importer
+// (scripts/import-file-store.mjs) writes every account of a source in one transaction this way.
+export async function insertAccount(client, user, credentials = []) {
+  await client.query(`INSERT INTO users (${USER_COLS}) VALUES ($1, $2, $3, $4, $5, $6::jsonb)`, toRow(user));
+  await writeClaims(client, user);
+  for (const c of credentials) await insertCredential(client, c);
+}
+
 export function postgresIdentityStore(pool) {
   async function holder(key, flag) {
     const { rows } = await pool.query(

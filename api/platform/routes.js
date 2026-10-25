@@ -12,10 +12,12 @@ import { projectWorkouts } from './workout-projection.js';
 import crypto from 'node:crypto';
 import { createProposal, listProposals, getProposal, declineProposal } from './proposals.js';
 import { acceptProposal, previewReplacement } from './accept-proposal.js';
+import { exportAccount } from './lifecycle.js';
 
 const ID = '[A-Za-z0-9_-]{1,64}';
 const TEMPLATES = [
   ['GET', '/api/platform/me'],
+  ['GET', '/api/platform/export'],
   ['GET', '/api/platform/gyms/{gymId}/members'],
   ['POST', '/api/platform/gyms/{gymId}/assignments'],
   ['DELETE', '/api/platform/gyms/{gymId}/assignments/{assignmentId}'],
@@ -41,6 +43,9 @@ export function platformRoutes({ db, json, readBody, readSession, audit }) {
     'GET /api/platform/me': async ({ principal }) => ({
       roles: principal.memberships.map(m => ({ gymId: m.gymId, gymName: m.gymName, role: m.role, membershipId: m.id })),
     }),
+
+    // The caller's own data, in the documented export format (lifecycle.js, docs/ops/PILOT_DATA_RECOVERY.md).
+    'GET /api/platform/export': async ({ user }) => exportAccount(db, user),
 
     'GET /api/platform/gyms/{gymId}/members': async ({ principal, params }) => {
       requireGymRole(principal, params.gymId, 'owner');
