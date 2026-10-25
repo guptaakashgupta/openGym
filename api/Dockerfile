@@ -58,6 +58,8 @@ COPY coach ./coach
 COPY state ./state
 COPY storage ./storage
 COPY platform ./platform
+COPY migrations ./migrations
+COPY scripts/migrate.mjs ./scripts/migrate.mjs
 ENV NODE_ENV=production
 ENV PORT=3000
 EXPOSE 3000

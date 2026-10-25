@@ -38,11 +38,15 @@ import { atomicWrite as durableWrite } from './durable.js';
 import { loadConfig } from './platform/config.js';
 import { createStateStore } from './storage/index.js';
 import { StateUnreadableError } from './storage/state-file.js';
+import { StateUnsupportedError } from './storage/state-postgres.js';
+import { createPool } from './storage/postgres.js';
 import { excusedOn, nudgeFor, nudgeWindowOpen, toneOf } from './nudge.js';
 
 const PORT = +(process.env.PORT || 3000);
 const DATA = process.env.DATA_DIR || '/data';
 const CONFIG = loadConfig();
+// Product mode (the shared gym pilot) keeps member state in PostgreSQL; file mode never connects.
+const POOL = CONFIG.mode === 'product' ? createPool(CONFIG.databaseUrl) : null;
 const RP_ID = process.env.RP_ID || 'localhost';
 const ORIGIN = process.env.ORIGIN || 'http://localhost:8080';
 const RP_NAME = process.env.RP_NAME || 'openGym';
@@ -191,7 +195,7 @@ function atomicWrite(file, content, mode) { durableWrite(file, content, mode); }
 // evicted by age; the tests shorten it, as they do REMINDER_TICK_MS.
 const STATE_CACHE_MAX = 64;
 const STATE_CACHE_TTL_MS = Math.max(50, +(process.env.STATE_CACHE_TTL_MS || 600000) || 600000);
-const STATE = createStateStore(CONFIG, { dataDir: DATA, cacheTtlMs: STATE_CACHE_TTL_MS, cacheMax: STATE_CACHE_MAX });
+const STATE = createStateStore(CONFIG, { dataDir: DATA, cacheTtlMs: STATE_CACHE_TTL_MS, cacheMax: STATE_CACHE_MAX, pool: POOL });
 const { stateFile, readState, readStateCached } = STATE;
 // When a profile last fetched its document (GET /api/data). The document's own `_ts` moves only
 // on a push, so a device that only ever read — a second phone, a profile that trains elsewhere
@@ -2391,6 +2395,9 @@ const routes = {
       prepared = await STATE.updateMemberState(user.id, cur =>
         prepareWrite(cur, body, { nextWriteId: () => crypto.randomBytes(8).toString('hex') }));
     } catch (e) {
+      // Text the database cannot hold (PostgreSQL JSONB refuses an embedded NUL): refused rather
+      // than silently altered, and nothing stored.
+      if (e instanceof StateUnsupportedError) return json(res, 400, { error: 'invalid state', code: 'unsupported-text' });
       if (!(e instanceof StateUnreadableError)) throw e;
       console.error('state file unreadable for', user.id); return json(res, 503, { error: 'state unreadable' });
     }
