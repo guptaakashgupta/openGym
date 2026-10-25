@@ -168,14 +168,23 @@ test('the three hot-path state reads all go through readStateCached', () => {
     const end = src.indexOf("\n  '", at + 1);
     return src.slice(at, end === -1 ? undefined : end);
   };
-  for (const key of ['GET /api/data/rev', 'POST /api/push/test', 'POST /api/push/rest-timer']) {
+  for (const key of ['POST /api/push/test', 'POST /api/push/rest-timer']) {
     const body = handler(key);
     assert.match(body, /readStateCached\(user\.id\)/, `${key} should read through the cache`);
     assert.doesNotMatch(body, /readState\(user\.id\)/, `${key} parses the whole document again`);
   }
-  // GET /api/data hands out the document itself and PUT compares against it — both want the real
-  // thing, uncached.
-  // (readStateStrict: a file that cannot be read is a 503, not an empty profile.)
-  assert.match(handler('GET /api/data'), /readStateStrict\(user\.id\)/);
-  assert.match(handler('PUT /api/data'), /readStateStrict\(user\.id\)/);
+  // Pilot: the state routes go through the member-state store (storage/state-file.js in file
+  // mode). The revision poll is its readMemberRevision, which in the file store reads through the
+  // same stat cache; GET /api/data and PUT want the real thing, uncached and strict (a file that
+  // cannot be read is a 503, not an empty profile).
+  assert.match(handler('GET /api/data/rev'), /STATE\.readMemberRevision\(user\.id\)/);
+  assert.doesNotMatch(handler('GET /api/data/rev'), /readState\(user\.id\)|readMemberState/);
+  const store = fs.readFileSync(path.join(API, 'storage', 'state-file.js'), 'utf8');
+  const revFn = store.slice(store.indexOf('async readMemberRevision('), store.indexOf('async updateMemberState('));
+  assert.match(revFn, /readStateCached\(uid\)/, 'the file store answers the revision poll from the stat cache');
+  assert.match(handler('GET /api/data'), /STATE\.readMemberState\(user\.id\)/);
+  assert.match(handler('PUT /api/data'), /STATE\.updateMemberState\(user\.id/);
+  const strict = /readStateStrict\(uid\)/;
+  assert.match(store.slice(store.indexOf('async readMemberState('), store.indexOf('async readMemberRevision(')), strict);
+  assert.match(store.slice(store.indexOf('async updateMemberState(')), strict);
 });

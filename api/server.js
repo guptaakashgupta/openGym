@@ -35,10 +35,14 @@ import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE } from 
 import { effectiveRoutineId } from './queue.js';
 import { prepareWrite, validateWrite, forClient, records } from './state/prepare-write.js';
 import { atomicWrite as durableWrite } from './durable.js';
+import { loadConfig } from './platform/config.js';
+import { createStateStore } from './storage/index.js';
+import { StateUnreadableError } from './storage/state-file.js';
 import { excusedOn, nudgeFor, nudgeWindowOpen, toneOf } from './nudge.js';
 
 const PORT = +(process.env.PORT || 3000);
 const DATA = process.env.DATA_DIR || '/data';
+const CONFIG = loadConfig();
 const RP_ID = process.env.RP_ID || 'localhost';
 const ORIGIN = process.env.ORIGIN || 'http://localhost:8080';
 const RP_NAME = process.env.RP_NAME || 'openGym';
@@ -180,7 +184,15 @@ function saveDb() {
 // Flushed before and after the rename (durable.js): a host reset must not bring back the file
 // the client was told had been replaced.
 function atomicWrite(file, content, mode) { durableWrite(file, content, mode); }
-const stateFile = uid => path.join(DATA, 'state-' + uid.replace(/[^a-zA-Z0-9_-]/g, '') + '.json');
+// Member state documents (storage/state-file.js in the default file mode). The stat cache it keeps
+// for the reminder tick is bounded: at most STATE_CACHE_MAX parsed states, none older than
+// STATE_CACHE_TTL_MS since last hit. Ten minutes is far longer than the gap between a client's
+// polls (30 s) or the reminder tick's (10 s), so nobody who is actually using the instance is ever
+// evicted by age; the tests shorten it, as they do REMINDER_TICK_MS.
+const STATE_CACHE_MAX = 64;
+const STATE_CACHE_TTL_MS = Math.max(50, +(process.env.STATE_CACHE_TTL_MS || 600000) || 600000);
+const STATE = createStateStore(CONFIG, { dataDir: DATA, cacheTtlMs: STATE_CACHE_TTL_MS, cacheMax: STATE_CACHE_MAX });
+const { stateFile, readState, readStateCached } = STATE;
 // When a profile last fetched its document (GET /api/data). The document's own `_ts` moves only
 // on a push, so a device that only ever read — a second phone, a profile that trains elsewhere
 // and just looks — showed "last sync never" in the admin dashboard (QA 1.3.9). Kept on the user
@@ -193,19 +205,6 @@ function notePull(user, now = Date.now()) {
 }
 // The later of the last push and the last pull.
 const lastSyncOf = (u, S) => Math.max(S?._ts || 0, u?.lastPull || 0) || null;
-function readState(uid) {
-  try { return JSON.parse(fs.readFileSync(stateFile(uid), 'utf8')); } catch { return null; }
-}
-// GET and PUT /api/data tell a profile with no state yet from one whose file cannot be read: the
-// second answers 503 instead of an empty profile, which a device would adopt, or a write would
-// replace, losing what a restore could still bring back.
-const UNREADABLE = Symbol('unreadable');
-function readStateStrict(uid) {
-  let raw;
-  try { raw = fs.readFileSync(stateFile(uid), 'utf8'); }
-  catch (e) { return e.code === 'ENOENT' ? null : UNREADABLE; }
-  try { return JSON.parse(raw); } catch { return UNREADABLE; }
-}
 // forClient (a stored document without the server's notes) and records (the readable entries of a
 // stored list) live in state/prepare-write.js with the write rules that define them.
 
@@ -469,38 +468,6 @@ const hhmmToMin = v => {
 // Minutes since the reminder's time on the user's clock; negative before it, NaN when either
 // side does not parse. Same-day only — a 23:55 reminder is not owed at 00:05 the next day.
 const minutesLate = (time, now) => hhmmToMin(now.hhmm) - hhmmToMin(time);
-// The tick reads every subscribed user's state file every 10 s. Most of those files do not
-// change between ticks; a stat is far cheaper than a read and a parse of a state that can be
-// megabytes, and it keeps the tick short — a slow tick was one more way to miss the minute.
-//
-// What it holds is a whole parsed state per user, and a state can be megabytes, so the two
-// bounds below are what keep it a cache rather than a leak on an instance with more than one
-// person on it: an entry nobody has touched for ten minutes is dropped, and the map never holds
-// more than STATE_CACHE_MAX users. Map iteration order is insertion order, so re-inserting on
-// every hit makes the first key the least recently hit one — which is the one to evict.
-const STATE_CACHE_MAX = 64;
-// Ten minutes: far longer than the gap between a client's polls (30 s) or the reminder tick's
-// (10 s), so nobody who is actually using the instance is ever evicted by age; the tests shorten
-// it, as they do REMINDER_TICK_MS.
-const STATE_CACHE_TTL_MS = Math.max(50, +(process.env.STATE_CACHE_TTL_MS || 600000) || 600000);
-const stateCache = new Map(); // uid -> { mtimeMs, size, hitAt, S }
-function readStateCached(uid) {
-  let st;
-  try { st = fs.statSync(stateFile(uid)); } catch { stateCache.delete(uid); return null; }
-  const now = Date.now();
-  for (const [k, v] of stateCache) if (now - v.hitAt > STATE_CACHE_TTL_MS) stateCache.delete(k);
-  const hit = stateCache.get(uid);
-  stateCache.delete(uid);                       // re-inserted below, so the map stays in hit order
-  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) {
-    hit.hitAt = now;
-    stateCache.set(uid, hit);
-    return hit.S;
-  }
-  const S = readState(uid);
-  stateCache.set(uid, { mtimeMs: st.mtimeMs, size: st.size, hitAt: now, S });
-  while (stateCache.size > STATE_CACHE_MAX) stateCache.delete(stateCache.keys().next().value);
-  return S;
-}
 // Missed-workout nudge (nudge.js): opt-in on top of the reminder, so it needs everything the
 // reminder does (a push subscription, the reminder on, a zone). Owed from 20:00 — or 2 h after the
 // reminder — until 21:30 on the user's clock, the same catch-up idea as the reminder's window: a
@@ -2366,8 +2333,9 @@ const routes = {
   'GET /api/data': async (req, res) => {
     const user = readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
-    const state = readStateStrict(user.id);
-    if (state === UNREADABLE) { console.error('state file unreadable for', user.id); return json(res, 503, { error: 'state unreadable' }); }
+    let state;
+    try { state = await STATE.readMemberState(user.id); }
+    catch (e) { if (!(e instanceof StateUnreadableError)) throw e; console.error('state file unreadable for', user.id); return json(res, 503, { error: 'state unreadable' }); }
     notePull(user);
     json(res, 200, { state: forClient(state), rev: state?._rev || 0 });
   },
@@ -2376,12 +2344,12 @@ const routes = {
   // device is meant to show what the server has, and this is what keeps that cheap.
   // Cheap means the stat cache the reminder tick already uses: parsing a megabytes-long document
   // to read one number off it cost 31 ms per poll on a 2.4 MB state, all of it on the event loop.
-  // Every write goes through atomicWrite's rename, so the cache can never hand out a stale rev.
+  // Every write evicts the profile's cache entry (storage/state-file.js), so it never hands out a
+  // stale rev.
   'GET /api/data/rev': async (req, res) => {
     const user = readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
-    const doc = readStateCached(user.id);
-    json(res, 200, { rev: doc?._rev || 0, ...(doc?._wid ? { wid: doc._wid } : {}) });
+    json(res, 200, await STATE.readMemberRevision(user.id));
   },
 
   // The phone app's background check before a missed-day nudge or a workout-day reminder it
@@ -2416,20 +2384,17 @@ const routes = {
     // document is read, as they always did.
     const invalid = validateWrite(body);
     if (invalid) return json(res, invalid.status, invalid.body);
-    // readState and atomicWrite are synchronous with nothing awaited between them, so the
-    // compare-and-write is atomic for this process.
-    const cur = readStateStrict(user.id);
-    if (cur === UNREADABLE) { console.error('state file unreadable for', user.id); return json(res, 503, { error: 'state unreadable' }); }
-    const prepared = prepareWrite(cur, body, { nextWriteId: () => crypto.randomBytes(8).toString('hex') });
+    // The compare-and-write runs under the store's per-profile write serialisation, and the
+    // answer goes out only once the store has persisted the document.
+    let prepared;
+    try {
+      prepared = await STATE.updateMemberState(user.id, cur =>
+        prepareWrite(cur, body, { nextWriteId: () => crypto.randomBytes(8).toString('hex') }));
+    } catch (e) {
+      if (!(e instanceof StateUnreadableError)) throw e;
+      console.error('state file unreadable for', user.id); return json(res, 503, { error: 'state unreadable' });
+    }
     if (prepared.status !== 200) return json(res, prepared.status, prepared.body);
-    atomicWrite(stateFile(user.id), prepared.text);
-    // The stat cache cannot see this write on its own: mtime granularity is 4 ms here (ext4 on
-    // this kernel — 3901 of 3999 back-to-back same-size writes shared one timestamp), and a
-    // `_rev` going from 7 to 8 does not change the file's size, so two writes inside one 4 ms
-    // tick are the same (mtimeMs, size) key. A reader that sampled between them would then serve
-    // the old revision until some later write happened to land on a different tick. This is the
-    // only writer of a state file in the tree, so evicting here is the whole fix.
-    stateCache.delete(user.id);
     // Starts (or stops) the grace clock of every stored file this write stopped (or started)
     // referencing. Bookkeeping only: the state is already saved, so nothing here may turn a
     // successful write into an error.
