@@ -37,7 +37,8 @@ import TimerFlash from './components/TimerFlash.jsx'
 import { openDeviceLinkRedeem } from './components/Passkeys.jsx'
 import { useAnimPacksBoot } from './components/Animations.jsx'
 import Login from './views/Login.jsx'
-import MobileOnboarding from './views/MobileOnboarding.jsx'
+import UpstreamOnboarding from './views/MobileOnboarding.jsx'
+import PilotOnboarding from './platform/MobileOnboarding.jsx'
 import PermissionSteps from './views/PermissionSteps.jsx'
 import Home from './views/Home.jsx'
 import CheckIn from './views/CheckIn.jsx'
@@ -58,6 +59,8 @@ import CoachIntake from './views/CoachIntake.jsx'
 import CoachSetup from './views/CoachSetup.jsx'
 // The gym pilot's screens (product build only): one place they join the app.
 import { PRODUCT } from './platform/config.js'
+// The phone's first screen: the product build pairs with its one built-in service.
+const MobileOnboarding = PRODUCT ? PilotOnboarding : UpstreamOnboarding
 import { gymRoutes } from './platform/Routes.jsx'
 
 // last known scrollY per route, so back-navigation can put the page where it was
