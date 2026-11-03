@@ -1,0 +1,60 @@
+.join-page {
+  display: flex;
+  justify-content: center;
+  padding: 28px 0;
+}
+
+.join-card {
+  width: 100%;
+  max-width: 440px;
+  margin: 0;
+  padding: 28px;
+  text-align: center;
+}
+
+.join-icon {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 20px;
+  border-radius: var(--r);
+  background: var(--acc-soft);
+  color: var(--acc);
+  font-size: 27px;
+}
+
+.join-card h1 {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.12;
+  letter-spacing: -.025em;
+  overflow-wrap: anywhere;
+}
+
+.join-role {
+  margin: 10px 0 0;
+  color: var(--label-2);
+  line-height: 1.4;
+}
+
+.join-note {
+  margin: 22px 0 0;
+  padding: 16px;
+  border-radius: var(--r);
+  background: var(--surface-2);
+  color: var(--label-2);
+  font-size: 14px;
+  line-height: 1.45;
+  text-align: start;
+}
+
+.join-card .btn {
+  margin-top: 28px;
+}
+
+@media (max-width: 480px) {
+  .join-page { padding-top: 16px; }
+  .join-card { padding: 24px 20px; }
+}

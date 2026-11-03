@@ -14,7 +14,7 @@ vi.mock('../lib/api.js', async importOriginal => ({ ...(await importOriginal()),
 const { api } = await import('../lib/api.js')
 const { useStore } = await import('../store/useStore.js')
 const { useGym, startGymRoleRefresh } = await import('./useGym.js')
-const { RequireRole } = await import('./Routes.jsx')
+const { RequireRole, GymHome } = await import('./Routes.jsx')
 const { ctxOf, forgetAccount } = await import('./workout-context.js')
 const { read } = await import('./workout-outbox.js')
 
@@ -128,6 +128,22 @@ describe('a staff route', () => {
     render('/gym/owner/g1')
     await act(async () => {})
     expect(host.textContent).not.toContain('staff data')
+  })
+})
+
+describe('the gym home', () => {
+  let host, root
+  beforeEach(() => { host = document.createElement('div'); document.body.append(host); root = createRoot(host) })
+  afterEach(() => { act(() => root.unmount()); host.remove() })
+
+  it('gives a new member clear routes to trainer plans and their own training', async () => {
+    signIn('a')
+    api.mockResolvedValue(roles(['Iron Den', 'member']))
+    await act(async () => { root.render(<MemoryRouter><GymHome /></MemoryRouter>) })
+    expect(host.querySelector('.gym-home-membership h2')?.textContent).toBe('Iron Den')
+    expect(host.querySelector('a[href="/gym/proposals"]')?.textContent).toContain('Plans from your trainer')
+    expect(host.querySelector('a[href="/plan"]')?.textContent).toContain('Your plan')
+    expect(host.querySelector('a[href="/workout"]')?.textContent).toContain('Start workout')
   })
 })
 

@@ -1164,6 +1164,7 @@ export default {
   'Applies to this exercise everywhere, not just this plan.': 'يُطبق على هذا التمرين في كل مكان، لا في هذه الخطة فقط.',
   'Check in': 'تسجيل الدخول',
   'At the gym': 'في الجيم',
+  'Gym': 'النادي الرياضي',
   'Show this at the gym': 'اعرض هذا في الجيم',
   'Add your gym card': 'أضف بطاقة الجيم',
   'Add a card': 'إضافة بطاقة',

@@ -7,6 +7,10 @@ import { t } from '../lib/i18n.js'
 import { gymMembers, gymInvitations, createInvitation, revokeInvitation, assignTrainer, endMembership } from './api.js'
 import { describeError } from './ui-errors.js'
 import { useGym } from './useGym.js'
+import { Button } from '../components/ui.jsx'
+import { copyText } from '../lib/clipboard.js'
+import { useUI } from '../store/useUI.js'
+import './owner.css'
 
 export default function Owner() {
   const { gymId } = useParams()
@@ -14,6 +18,7 @@ export default function Owner() {
   const [problem, setProblem] = useState(null)
   const [fresh, setFresh] = useState(null)     // the invitation just made: its token, shown once
   const [ending, setEnding] = useState(null)   // membership waiting for the second step
+  const inviteLink = fresh ? `${location.origin}${location.pathname}#/gym/join?token=${fresh.token}` : ''
 
   const fail = e => {
     const p = describeError(e)
@@ -31,56 +36,74 @@ export default function Owner() {
   useEffect(() => { load() }, [load])
   const act = fn => async () => { try { await fn(); await load() } catch (e) { fail(e) } }
 
-  if (problem) return <div className="pad"><p role="alert">{problem.message}</p><button onClick={load}>{t('Try again')}</button></div>
+  if (problem) return <div className="owner-page"><div className="card"><p role="alert">{problem.message}</p><Button onClick={load}>{t('Try again')}</Button></div></div>
   if (!data) return <p className="muted pad">{t('Loading…')}</p>
 
   const trainers = data.members.filter(m => m.role === 'trainer')
   const members = data.members.filter(m => m.role === 'member')
   const pending = data.invitations.filter(i => !i.consumedAt && !i.revokedAt)
   const invite = role => act(async () => setFresh(await createInvitation(gymId, role)))
+  const copyInvite = async () => useUI.getState().toast(await copyText(inviteLink) ? t('Copied') : t('Could not copy'))
 
   return (
-    <div className="pad">
-      <h1>{t('Your gym')}</h1>
+    <div className="owner-page">
+      <header className="hdr"><h1>{t('Your gym')}</h1></header>
 
-      <h2>{t('Members')}</h2>
-      {!members.length && <p className="muted">{t('No members yet. Invite someone below.')}</p>}
-      {members.map(m => (
-        <div key={m.membershipId} className="row">
-          <span>{m.name}</span>
-          <select aria-label={t('Trainer for {0}', m.name)} value={m.trainerMembershipId || ''}
-            onChange={e => e.target.value && act(() => assignTrainer(gymId, m.membershipId, e.target.value))()}>
-            <option value="">{t('No trainer')}</option>
-            {trainers.map(tr => <option key={tr.membershipId} value={tr.membershipId}>{tr.name}</option>)}
-          </select>
-          {ending === m.membershipId
-            ? <>
-                <button onClick={act(async () => { await endMembership(gymId, m.membershipId); setEnding(null) })}>{t('Yes, end membership')}</button>
-                <button onClick={() => setEnding(null)}>{t('Cancel')}</button>
-              </>
-            : <button onClick={() => setEnding(m.membershipId)}>{t('End {0}', m.name)}</button>}
+      <section className="owner-section">
+        <h2 className="sect-t">{t('Members')}</h2>
+        <div className="owner-group">
+          {!members.length && <p className="owner-empty">{t('No members yet. Invite someone below.')}</p>}
+          {members.map(m => (
+            <div key={m.membershipId} className="owner-member">
+              <strong>{m.name}</strong>
+              <select aria-label={t('Trainer for {0}', m.name)} value={m.trainerMembershipId || ''}
+                onChange={e => e.target.value && act(() => assignTrainer(gymId, m.membershipId, e.target.value))()}>
+                <option value="">{t('No trainer')}</option>
+                {trainers.map(tr => <option key={tr.membershipId} value={tr.membershipId}>{tr.name}</option>)}
+              </select>
+              <div className="owner-member-actions">
+                {ending === m.membershipId
+                  ? <>
+                      <Button variant="danger" size="sm" onClick={act(async () => { await endMembership(gymId, m.membershipId); setEnding(null) })}>{t('Yes, end membership')}</Button>
+                      <Button size="sm" onClick={() => setEnding(null)}>{t('Cancel')}</Button>
+                    </>
+                  : <Button variant="ghost" size="sm" onClick={() => setEnding(m.membershipId)}>{t('End {0}', m.name)}</Button>}
+              </div>
+            </div>
+          ))}
         </div>
-      ))}
+      </section>
 
-      <h2>{t('Trainers')}</h2>
-      {!trainers.length && <p className="muted">{t('No trainers yet.')}</p>}
-      {trainers.map(tr => <p key={tr.membershipId}>{tr.name}</p>)}
+      <section className="owner-section">
+        <h2 className="sect-t">{t('Trainers')}</h2>
+        <div className="owner-group">
+          {!trainers.length && <p className="owner-empty">{t('No trainers yet.')}</p>}
+          {trainers.map(tr => <div key={tr.membershipId} className="owner-trainer">{tr.name}</div>)}
+        </div>
+      </section>
 
-      <h2>{t('Invitations')}</h2>
-      <button onClick={invite('member')}>{t('Invite a member')}</button>
-      <button onClick={invite('trainer')}>{t('Invite a trainer')}</button>
-      {fresh && (
-        <div className="card">
-          <p>{t('Send this to the person you invite. It is shown only now, works once, and can be revoked below.')}</p>
-          <code>{`${location.origin}${location.pathname}#/gym/join?token=${fresh.token}`}</code>
+      <section className="owner-section">
+        <h2 className="sect-t">{t('Invitations')}</h2>
+        <div className="owner-invite-actions">
+          <Button variant="tinted" onClick={invite('member')}>{t('Invite a member')}</Button>
+          <Button variant="tinted" onClick={invite('trainer')}>{t('Invite a trainer')}</Button>
         </div>
-      )}
-      {pending.map(i => (
-        <div key={i.id} className="row">
-          <span>{t('{0} invitation', i.role)}</span>
-          <button onClick={act(() => revokeInvitation(gymId, i.id))}>{t('Revoke')}</button>
-        </div>
-      ))}
+        {fresh && (
+          <div className="owner-invite-link card">
+            <p>{t('Send this to the person you invite. It is shown only now, works once, and can be revoked below.')}</p>
+            <code>{inviteLink}</code>
+            <Button variant="primary" icon="copy" onClick={copyInvite}>{t('Copy link')}</Button>
+          </div>
+        )}
+        {!!pending.length && <div className="owner-group">
+          {pending.map(i => (
+            <div key={i.id} className="owner-pending">
+              <span>{t('{0} invitation', i.role)}</span>
+              <Button variant="danger" size="sm" onClick={act(() => revokeInvitation(gymId, i.id))}>{t('Revoke')}</Button>
+            </div>
+          ))}
+        </div>}
+      </section>
     </div>
   )
 }

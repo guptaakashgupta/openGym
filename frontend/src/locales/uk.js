@@ -1113,6 +1113,7 @@ export default {
   // Gym check-in (mobile-only)
   'Check in': 'Відмітитися',
   'At the gym': 'У залі',
+  'Gym': 'Спортзал',
   'Show this at the gym': 'Покажи це в залі',
   'Add your gym card': 'Додай картку залу',
   'Add a card': 'Додати картку',

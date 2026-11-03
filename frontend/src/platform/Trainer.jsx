@@ -9,6 +9,9 @@ import { buildPlanBundle } from '../lib/plan-share.js'
 import { myClients, sendProposal, proposals } from './api.js'
 import { describeError } from './ui-errors.js'
 import ClientProgress from './ClientProgress.jsx'
+import Icon from '../components/Icon.jsx'
+import { Button } from '../components/ui.jsx'
+import './trainer.css'
 
 function ProposalDraft({ client }) {
   const S = useStore(s => s.S)
@@ -31,17 +34,18 @@ function ProposalDraft({ client }) {
     } catch (e) { setProblem(describeError(e)) }
   }
   return (
-    <section>
-      <h2>{t('Propose a plan')}</h2>
-      {!routines.length && <p className="muted">{t('Make a routine in Plan first; it is what you send.')}</p>}
-      {routines.map(r => (
-        <label key={r.id}><input type="checkbox" aria-label={r.name} checked={picked.includes(r.id)} onChange={() => toggle(r.id)} /> {r.name}</label>
-      ))}
-      {picked.length > 0 && <p className="muted">{t('Not sent yet: {0}', routines.filter(r => picked.includes(r.id)).map(r => r.name).join(', '))}</p>}
-      <button disabled={!picked.length} onClick={send}>{t('Send to {0}', client.name)}</button>
-      {problem && <p role="alert">{problem.message}</p>}
-      <h3>{t('Sent')}</h3>
-      {sent.map(p => <p key={p.id}>{p.name || t('Plan')} — {p.status}</p>)}
+    <section className="trainer-section trainer-proposal">
+      <h2 className="sect-t">{t('Propose a plan')}</h2>
+      <div className="trainer-proposal-body">
+        {!routines.length && <p className="muted">{t('Make a routine in Plan first; it is what you send.')}</p>}
+        {!!routines.length && <div className="trainer-routines">{routines.map(r => (
+          <label key={r.id} className="trainer-routine"><input type="checkbox" aria-label={r.name} checked={picked.includes(r.id)} onChange={() => toggle(r.id)} /><span>{r.name}</span></label>
+        ))}</div>}
+        {picked.length > 0 && <p className="trainer-draft">{t('Not sent yet: {0}', routines.filter(r => picked.includes(r.id)).map(r => r.name).join(', '))}</p>}
+        <Button variant="primary" disabled={!picked.length} onClick={send}>{t('Send to {0}', client.name)}</Button>
+        {problem && <p role="alert">{problem.message}</p>}
+        {!!sent.length && <div className="trainer-sent"><h3>{t('Sent')}</h3>{sent.map(p => <p key={p.id}><span>{p.name || t('Plan')}</span><span>{p.status}</span></p>)}</div>}
+      </div>
     </section>
   )
 }
@@ -54,13 +58,20 @@ export default function Trainer() {
 
   if (problem) return <p className="pad" role="alert">{problem.message}</p>
   if (!clients) return <p className="muted pad">{t('Loading…')}</p>
-  const client = clients.find(c => c.membershipId === open)
+  const client = clients.find(c => c.membershipId === open) || clients[0]
   return (
-    <div className="pad">
-      <h1>{t('My clients')}</h1>
-      {!clients.length && <p className="muted">{t('No clients assigned to you yet.')}</p>}
-      {clients.map(c => <button key={c.membershipId} onClick={() => setOpen(c.membershipId)}>{c.name}</button>)}
-      {client && <><ClientProgress key={client.membershipId} client={client} /><ProposalDraft client={client} /></>}
+    <div className="trainer-page">
+      <header className="hdr"><h1>{t('My clients')}</h1></header>
+      {!clients.length && <div className="trainer-empty card"><Icon name="dumbbell" aria-hidden="true" /><p>{t('No clients assigned to you yet.')}</p></div>}
+      {!!clients.length && <>
+        <nav className="trainer-client-list" aria-label={t('My clients')}>
+          {clients.map(c => <button className={`trainer-client${client.membershipId === c.membershipId ? ' is-active' : ''}`} aria-current={client.membershipId === c.membershipId ? 'true' : undefined} key={c.membershipId} onClick={() => setOpen(c.membershipId)}><span className="trainer-avatar" aria-hidden="true">{c.name?.trim().charAt(0).toLocaleUpperCase() || '•'}</span><span className="trainer-client-name">{c.name}</span><Icon name="chevronRight" aria-hidden="true" /></button>)}
+        </nav>
+        <div className="trainer-detail" key={client.membershipId}>
+          <ClientProgress client={client} />
+          <ProposalDraft client={client} />
+        </div>
+      </>}
     </div>
   )
 }

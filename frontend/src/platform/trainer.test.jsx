@@ -46,11 +46,20 @@ describe('the trainer screen', () => {
 
   it('shows a client’s gym workouts and progress, read live and not kept', async () => {
     await render()
-    await click(button('Mira'))
+    expect(host.querySelector('.trainer-client.is-active')?.textContent).toContain('Mira')
     expect(api.clientWorkouts).toHaveBeenCalledWith('m-mem')
     expect(host.textContent).toContain('2026-10-20')
     expect(host.textContent).toContain('100')
     expect(JSON.stringify({ ...localStorage })).not.toContain('2026-10-20')
+  })
+
+  it('switches the visible client when there is more than one', async () => {
+    api.myClients.mockResolvedValue({ clients: [...CLIENTS.clients, { membershipId: 'm-two', gymId: 'g1', name: 'Alex' }] })
+    await render()
+    await click(button('Alex'))
+    expect(api.clientWorkouts).toHaveBeenCalledWith('m-two')
+    expect(host.querySelector('.trainer-section-head h2')?.textContent).toBe('Alex')
+    expect(host.querySelector('.trainer-client.is-active')?.textContent).toContain('Alex')
   })
 
   it('hides what it showed when access ends or the connection drops', async () => {

@@ -1321,6 +1321,7 @@ export default {
   // Gym check-in (mobile-only)
   'Check in': 'Enregistrement',
   'At the gym': 'À la salle',
+  'Gym': 'Salle de sport',
   'Show this at the gym': 'À présenter à la salle',
   'Add your gym card': 'Ajoute ta carte de salle',
   'Add a card': 'Ajouter une carte',

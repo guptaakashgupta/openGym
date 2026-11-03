@@ -1,0 +1,134 @@
+.owner-page {
+  padding: 4px 0 24px;
+}
+
+.owner-section {
+  margin-bottom: 24px;
+}
+
+.owner-section .sect-t {
+  margin: 0;
+  padding: 0 4px 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--label-2);
+}
+
+.owner-group {
+  overflow: hidden;
+  border-radius: var(--r-card);
+  background: var(--surface);
+}
+
+.owner-empty {
+  margin: 0;
+  padding: 18px 16px;
+  color: var(--label-2);
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+.owner-member {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 14px;
+  align-items: center;
+  padding: 16px;
+}
+
+.owner-member + .owner-member,
+.owner-trainer + .owner-trainer,
+.owner-pending + .owner-pending {
+  border-top: var(--hair) solid var(--sep);
+}
+
+.owner-member strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+
+.owner-member select {
+  max-width: 180px;
+  min-height: 38px;
+  padding: 7px 30px 7px 11px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--label);
+  font-size: 14px;
+}
+
+.owner-member-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.owner-trainer {
+  padding: 13px 16px;
+}
+
+.owner-invite-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.owner-invite-actions .btn {
+  min-height: 50px;
+  padding-inline: 10px;
+  font-size: 15px;
+}
+
+.owner-invite-link {
+  margin-bottom: 12px;
+}
+
+.owner-invite-link p {
+  margin: 0 0 14px;
+  color: var(--label-2);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.owner-invite-link code {
+  display: block;
+  overflow-wrap: anywhere;
+  padding: 12px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--label);
+  font-size: 12px;
+  line-height: 1.45;
+  user-select: text;
+}
+
+.owner-invite-link .btn {
+  margin-top: 14px;
+}
+
+.owner-pending {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 56px;
+  padding: 10px 16px;
+}
+
+.owner-pending span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.owner-pending .btn {
+  flex: none;
+}
+
+@media (max-width: 400px) {
+  .owner-invite-actions { grid-template-columns: 1fr; }
+  .owner-member select { max-width: 148px; }
+}

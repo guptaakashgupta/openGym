@@ -43,6 +43,14 @@ beforeEach(() => {
 afterEach(() => { act(() => root.unmount()); host.remove() })
 
 describe('an invitation link', () => {
+  it('shows the gym and a clear primary action for an owner invitation', async () => {
+    api.previewInvitation.mockResolvedValue({ gymName: 'Iron Den', role: 'owner' })
+    await render(<JoinGym />, '/gym/join?token=gi_abcdefghijklmnopqrstuvwx')
+    expect(host.querySelector('.join-card h1')?.textContent).toBe('Iron Den')
+    expect(button('Join Iron Den')?.classList.contains('primary')).toBe(true)
+    expect(host.textContent).not.toContain('Your trainer will see')
+  })
+
   it('is kept across signing in, briefly and only in this tab, and dropped once used', async () => {
     join.captureJoinToken('#/gym/join?token=gi_abcdefghijklmnopqrstuvwx')
     expect(join.pendingJoinToken()).toBe('gi_abcdefghijklmnopqrstuvwx')
@@ -117,10 +125,20 @@ describe('the proposals screen', () => {
 
   it('shows the plan and the days it would change before anything is decided', async () => {
     await render(<Proposals />)
-    await click(button('Plan for Mira'))
+    expect(host.querySelector('.proposals-list-item.is-active')?.textContent).toContain('Plan for Mira')
+    expect(api.proposal).toHaveBeenCalledWith('pv1')
     expect(host.textContent).toContain('Strength A')
     expect(host.querySelector('input[type="checkbox"][aria-label="Monday"]')).toBeTruthy()
     expect(api.acceptProposal).not.toHaveBeenCalled()
+  })
+
+  it('shows another plan when selected from the list', async () => {
+    api.proposals.mockResolvedValue({ received: [{ id: 'pv1', status: 'pending', name: 'Plan for Mira' }, { id: 'pv2', status: 'pending', name: 'Second plan' }], sent: [] })
+    api.proposal.mockImplementation(async id => ({ ...PLAN, id, name: id === 'pv2' ? 'Second plan' : 'Plan for Mira' }))
+    await render(<Proposals />)
+    await click(button('Second plan'))
+    expect(api.proposal).toHaveBeenCalledWith('pv2')
+    expect(host.querySelector('.proposal-review h2')?.textContent).toBe('Second plan')
   })
 
   it('declines', async () => {

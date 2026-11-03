@@ -979,6 +979,7 @@ export default {
   // Gym check-in (mobile-only)
   'Check in': 'เช็คอิน',
   'At the gym': 'ที่ยิม',
+  'Gym': 'ยิม',
   'Show this at the gym': 'แสดงสิ่งนี้ที่ยิม',
   'Add your gym card': 'เพิ่มบัตรสมาชิกยิมของคุณ',
   'Add a card': 'เพิ่มบัตร',

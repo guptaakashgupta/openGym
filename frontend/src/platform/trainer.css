@@ -1,0 +1,68 @@
+.trainer-page { padding: 4px 0 28px; }
+.trainer-page .hdr { margin-bottom: 20px; }
+
+.trainer-empty { display: flex; align-items: center; gap: 16px; padding: 22px; }
+.trainer-empty .icn { flex: none; color: var(--acc); font-size: 28px; }
+.trainer-empty p { margin: 0; color: var(--label-2); line-height: 1.45; }
+
+.trainer-client-list { display: grid; gap: 8px; margin-bottom: 26px; }
+.trainer-client {
+  display: flex; align-items: center; gap: 13px; width: 100%; min-height: 64px;
+  padding: 10px 14px; border-radius: var(--r-card); background: var(--surface);
+  color: var(--label); text-align: start; transition: background var(--fast), transform var(--fast);
+}
+.trainer-client:active { transform: scale(.985); }
+.trainer-client:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+.trainer-client.is-active { background: var(--acc-soft); }
+.trainer-avatar {
+  display: grid; place-items: center; flex: none; width: 40px; height: 40px;
+  border-radius: 12px; background: var(--surface-2); color: var(--label-2);
+  font-size: 17px; font-weight: 600;
+}
+.trainer-client.is-active .trainer-avatar { background: var(--acc); color: var(--on-acc); }
+.trainer-client-name { min-width: 0; flex: 1; overflow-wrap: anywhere; font-size: 16px; font-weight: 600; }
+.trainer-client > .icn { flex: none; color: var(--label-3); font-size: 17px; }
+
+.trainer-section { margin-bottom: 26px; }
+.trainer-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.trainer-section-head h2 { min-width: 0; margin: 0; font-size: 22px; line-height: 1.2; overflow-wrap: anywhere; }
+.trainer-section-head .btn { flex: none; }
+.trainer-section > [role="alert"], .trainer-proposal-body > [role="alert"] { margin: 12px 0; color: var(--red); line-height: 1.4; }
+.trainer-section > .muted { margin: 12px 0; }
+.trainer-no-workouts { margin: 0; padding: 20px 16px; border-radius: var(--r-card); background: var(--surface); color: var(--label-2); }
+.trainer-highlights { overflow: hidden; border-radius: var(--r-card); background: var(--surface); }
+.trainer-highlight { display: flex; justify-content: space-between; gap: 10px 18px; padding: 14px 16px; line-height: 1.4; }
+.trainer-highlight + .trainer-highlight { border-top: var(--hair) solid var(--sep); }
+.trainer-highlight strong { min-width: 0; overflow-wrap: anywhere; font-size: 15px; font-weight: 600; }
+.trainer-highlight span { color: var(--label-2); font-size: 14px; text-align: end; }
+.trainer-history { margin-top: 22px; }
+.trainer-history .sect-t, .trainer-proposal > .sect-t { margin: 0; padding: 0 4px 8px; font-size: 15px; font-weight: 600; }
+.trainer-workout { padding: 15px 16px; border-radius: var(--r-card); background: var(--surface); }
+.trainer-workout + .trainer-workout { margin-top: 8px; }
+.trainer-workout h4 { margin: 0 0 9px; font-size: 14px; color: var(--label-2); font-weight: 500; }
+.trainer-workout p { display: flex; justify-content: space-between; gap: 8px 16px; margin: 0; line-height: 1.4; }
+.trainer-workout p + p { margin-top: 9px; padding-top: 9px; border-top: var(--hair) solid var(--sep); }
+.trainer-workout strong { min-width: 0; overflow-wrap: anywhere; font-weight: 500; }
+.trainer-workout p span { color: var(--label-2); text-align: end; }
+
+.trainer-proposal-body { padding: 16px; border-radius: var(--r-card); background: var(--surface); }
+.trainer-proposal-body > .muted { margin: 0 0 15px; line-height: 1.4; }
+.trainer-routines { margin: -4px -16px 16px; }
+.trainer-routine { display: flex; align-items: center; gap: 13px; min-height: 52px; padding: 10px 16px; cursor: pointer; }
+.trainer-routine + .trainer-routine { border-top: var(--hair) solid var(--sep); }
+.trainer-routine input { flex: none; width: 20px; height: 20px; margin: 0; accent-color: var(--acc); }
+.trainer-routine span { min-width: 0; overflow-wrap: anywhere; }
+.trainer-draft { margin: 0 0 13px; color: var(--label-2); font-size: 14px; line-height: 1.4; }
+.trainer-sent { margin-top: 22px; padding-top: 16px; border-top: var(--hair) solid var(--sep); }
+.trainer-sent h3 { margin: 0 0 8px; font-size: 14px; font-weight: 600; color: var(--label-2); }
+.trainer-sent p { display: flex; justify-content: space-between; gap: 12px; margin: 0; padding: 7px 0; }
+.trainer-sent p span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.trainer-sent p span:last-child { color: var(--label-2); }
+
+@media (min-width: 680px) {
+  .trainer-client-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 420px) {
+  .trainer-highlight, .trainer-workout p { flex-direction: column; gap: 2px; }
+  .trainer-highlight span, .trainer-workout p span { text-align: start; }
+}

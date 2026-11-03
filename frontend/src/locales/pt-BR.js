@@ -781,6 +781,7 @@ export const PT_BR_OVERRIDES = {
   'You still log the total weight. This only feeds the plate line under each set.': 'Você continua registrando o peso total. Isso só alimenta a linha de anilhas embaixo de cada série.',
   // Gym check-in (mobile-only) — only where pt-BR differs from pt (inherited via ...pt)
   'At the gym': 'Na academia',
+  'Gym': 'Academia',
   'Show this at the gym': 'Mostre isto na academia',
   'Add your gym card': 'Adicione seu cartão da academia',
   'Scan it, import a photo, or type the code by hand.': 'Escaneie, importe uma foto ou digite o código à mão.',

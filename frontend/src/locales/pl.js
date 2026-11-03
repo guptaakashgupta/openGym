@@ -1321,6 +1321,7 @@ export default {
   // Gym check-in (mobile-only)
   'Check in': 'Zamelduj się',
   'At the gym': 'Na siłowni',
+  'Gym': 'Siłownia',
   'Show this at the gym': 'Pokaż to na siłowni',
   'Add your gym card': 'Dodaj kartę siłowni',
   'Add a card': 'Dodaj kartę',

@@ -16,7 +16,8 @@ Inventory taken 25 Oct 2026 with
 | `GET /api/nudge-check` | Supported | `member_states` |
 | `GET /api/me`, `POST /api/logout`, `POST /api/logout/all` | Supported | `users` (identity-postgres.js) |
 | `POST /api/register/{options,verify}`, `POST /api/login/{options,verify}` | Supported. Signup (passkey or password) needs a gym invitation (`invite`) and redeems it; `PILOT_OPEN_SIGNUP=1` is the operator's bootstrap switch | `users`, `credentials`, `auth_challenges`, `gym_invitations` |
-| `/api/platform/*` (me, members, assignments, memberships/end, clients, clients/:id/workouts, invitations, invitations/preview, invitations/redeem) | Product only; scoped by current membership (platform/routes.js) | `gyms`, `gym_memberships`, `trainer_assignments`, `gym_invitations` |
+| `POST /api/platform/invitations/preview` | Product only; public preview for a bearer of the invitation token, returning gym name and role before signup | `gyms`, `gym_invitations` |
+| `/api/platform/*` (me, members, assignments, memberships/end, clients, clients/:id/workouts, invitations, invitations/redeem) | Product only; requires a session and is scoped by current membership or invitation (platform/routes.js) | `gyms`, `gym_memberships`, `trainer_assignments`, `gym_invitations` |
 | `GET /api/platform/export` | Product only; the caller's own data, format `opengym-pilot-export/1` (platform/lifecycle.js, docs/ops/PILOT_DATA_RECOVERY.md) | `member_states`, `gym_memberships`, `plan_proposal_versions`, `workout_visibility` |
 | `POST /api/register/password`, `POST /api/login/password`, `POST /api/login/password-reset` | Supported when `PASSWORD_LOGIN` is on | `users`, `login_identifiers` |
 | `GET/POST/DELETE /api/account/password`, `POST/DELETE /api/account/email` | Supported | `users`, `login_identifiers` |

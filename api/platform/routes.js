@@ -117,8 +117,6 @@ export function platformRoutes({ db, json, readBody, readSession, audit }) {
       return { ok: true };
     },
 
-    'POST /api/platform/invitations/preview': async ({ user, body }) => previewInvitation(db, tokenOf(body), user.id),
-
     'POST /api/platform/clients/{membershipId}/proposals': async ({ req, user, params, body }) => {
       const previousVersionId = typeof body.previousVersionId === 'string' ? body.previousVersionId : null;
       const proposal = await createProposal(db, { trainerUserId: user.id, memberMembershipId: params.membershipId, bundle: body.bundle, previousVersionId });
@@ -164,6 +162,17 @@ export function platformRoutes({ db, json, readBody, readSession, audit }) {
     },
     async handle(req, res, { key, params }) {
       const user = await readSession(req);
+      // Possession of the unguessable token is enough to preview its gym and role before signup.
+      // All other gym routes, including redemption, still require a session.
+      if (key === 'POST /api/platform/invitations/preview') {
+        const body = await readBody(req);
+        try { return json(res, 200, await previewInvitation(db, tokenOf(body), user?.id)); }
+        catch (e) {
+          const answer = errorAnswer(e);
+          if (!answer) throw e;
+          return json(res, answer.status, answer.body);
+        }
+      }
       if (!user) return json(res, 401, { error: 'not signed in' });
       const body = req.method === 'GET' ? {} : await readBody(req);
       try {

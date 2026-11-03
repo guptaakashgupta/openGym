@@ -1,0 +1,81 @@
+.gym-home { padding: 4px 0 24px; }
+.gym-home .hdr { margin-bottom: 22px; }
+
+.gym-home-membership {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 144px;
+  margin-bottom: 22px;
+  padding: 24px;
+  border: 1px solid var(--acc-line);
+  border-radius: var(--r-card);
+  background: linear-gradient(120deg, var(--acc-soft), var(--surface) 72%);
+}
+
+.gym-home-emblem {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 52px;
+  height: 52px;
+  border-radius: 15px;
+  background: var(--acc);
+  color: var(--on-acc);
+  font-size: 28px;
+}
+
+.gym-home-membership-copy { min-width: 0; }
+.gym-home-membership-copy > span { color: var(--label-2); font-size: 13px; }
+.gym-home-membership h2 {
+  margin: 4px 0 0;
+  font-size: clamp(23px, 6vw, 30px);
+  line-height: 1.14;
+  letter-spacing: -.025em;
+  overflow-wrap: anywhere;
+}
+.gym-home-check { align-self: flex-start; margin-inline-start: auto; color: var(--acc); font-size: 22px; }
+
+.gym-home-actions, .gym-home-staff { display: grid; gap: 10px; }
+.gym-home-staff { margin-top: 16px; }
+.gym-home-action-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.gym-home-action {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  min-height: 68px;
+  padding: 16px;
+  border-radius: var(--r-card);
+  background: var(--surface);
+  color: var(--label);
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background var(--fast), transform var(--fast);
+}
+.gym-home-action:active { background: var(--surface-2); transform: scale(.985); }
+.gym-home-action:focus-visible { outline: 2px solid var(--acc); outline-offset: 3px; }
+.gym-home-action > .icn:first-child { flex: none; color: var(--acc); font-size: 23px; }
+.gym-home-action > span:not(.gym-home-action-icon) { min-width: 0; overflow-wrap: break-word; }
+.gym-home-action-main { min-height: 94px; font-size: 18px; }
+.gym-home-action-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--acc-soft);
+  color: var(--acc);
+  font-size: 24px;
+}
+.gym-home-chevron { flex: none; margin-inline-start: auto; color: var(--label-3); font-size: 16px; }
+.gym-home-empty { display: flex; align-items: center; gap: 18px; padding: 24px; }
+.gym-home-empty p { margin: 0; color: var(--label-2); line-height: 1.45; }
+
+@media (max-width: 420px) {
+  .gym-home-membership { min-height: 126px; padding: 20px; }
+  .gym-home-action-pair { grid-template-columns: 1fr; }
+}

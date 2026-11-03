@@ -1321,6 +1321,7 @@ export default {
   // Gym check-in (mobile-only)
   'Check in': '체크인',
   'At the gym': '헬스장에서',
+  'Gym': '헬스장',
   'Show this at the gym': '헬스장에서 이것을 보여주세요',
   'Add your gym card': '헬스장 카드 추가',
   'Add a card': '카드 추가',

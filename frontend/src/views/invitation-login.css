@@ -1,0 +1,21 @@
+.login-invitation {
+  margin: 16px 0 22px;
+  padding: 20px;
+  text-align: start;
+}
+
+.login-invitation h2 {
+  margin: 0 0 6px;
+  color: var(--label);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.login-invitation p {
+  margin: 0;
+  color: var(--label-2);
+  font-size: 15px;
+  line-height: 1.4;
+}

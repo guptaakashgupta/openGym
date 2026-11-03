@@ -1341,6 +1341,7 @@ export default {
   // Gym check-in (mobile-only)
   'Check in': 'Einchecken',
   'At the gym': 'Im Studio',
+  'Gym': 'Fitnessstudio',
   'Show this at the gym': 'Im Studio vorzeigen',
   'Add your gym card': 'Studio-Karte hinzufügen',
   'Add a card': 'Karte hinzufügen',

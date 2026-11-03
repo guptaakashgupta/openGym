@@ -48,8 +48,15 @@ test('an owner invites; trainers, members and other gyms cannot; only a hash is 
 });
 
 test('the gym and role are shown before joining; redeeming makes the membership', async t => {
-  const { A, as, invite } = await world(t);
+  const { h, A, as, invite } = await world(t);
   const { token } = (await invite()).body;
+  const publicPreview = await h.req('POST', '/api/platform/invitations/preview', { body: { token }, ip: ip() });
+  assert.equal(publicPreview.status, 200);
+  assert.equal(publicPreview.body.gymName, 'Gym A');
+  assert.equal(publicPreview.body.role, 'member');
+  assert.equal((await h.req('POST', '/api/platform/invitations/preview', { body: { token: 'gi_unknown' }, ip: ip() })).status, 404);
+  assert.equal((await h.req('POST', '/api/platform/invitations/redeem', { body: { token }, ip: ip() })).status, 401);
+  assert.equal((await h.req('GET', `/api/platform/gyms/${A.id}/invitations`, { ip: ip() })).status, 401);
   const preview = await as('u1', 'POST', '/api/platform/invitations/preview', { token });
   assert.deepEqual({ ...preview.body, expiresAt: undefined }, { gymName: 'Gym A', role: 'member', boundToAccount: false, expiresAt: undefined });
   const r = await as('u1', 'POST', '/api/platform/invitations/redeem', { token });

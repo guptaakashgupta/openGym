@@ -7,6 +7,7 @@ import { EXIDX } from '../lib/exercises.js'
 import { exerciseNameFor } from '../lib/i18n-core.js'
 import { clientWorkouts } from './api.js'
 import { describeError } from './ui-errors.js'
+import { Button } from '../components/ui.jsx'
 
 const exName = e => (e.custom ? t('Custom exercise') : EXIDX[e.exerciseId] ? exerciseNameFor(EXIDX[e.exerciseId]) : e.exerciseId)
 const setLine = (s, unit) => [s.reps != null && `${s.reps} ×`, s.load != null && `${s.load} ${unit}`, s.seconds != null && `${s.seconds} s`]
@@ -22,22 +23,21 @@ export default function ClientProgress({ client }) {
   useEffect(() => { load() }, [load])
 
   return (
-    <section>
-      <h2>{client.name}</h2>
-      <button onClick={load}>{t('Refresh')}</button>
+    <section className="trainer-section trainer-progress">
+      <div className="trainer-section-head"><h2>{client.name}</h2><Button size="sm" variant="tinted" icon="reset" onClick={load}>{t('Refresh')}</Button></div>
       {problem && <p role="alert">{problem.message}</p>}
       {!problem && !view && <p className="muted">{t('Loading…')}</p>}
       {view && <>
-        {!view.workouts.length && <p className="muted">{t('No gym workouts yet.')}</p>}
-        {view.progress.map(p => (
-          <p key={p.exerciseId}>{exName(p)}: {t('best {0} {1} over {2} sessions', p.bestLoad, view.unit, p.sessions)}</p>
-        ))}
-        {view.workouts.map(w => (
-          <div key={w.id} className="card">
-            <h3>{w.date}</h3>
-            {w.exercises.map((e, i) => <p key={i}>{exName(e)} — {e.sets.map(s => setLine(s, view.unit)).join(', ')}</p>)}
+        {!view.workouts.length && <p className="trainer-no-workouts">{t('No gym workouts yet.')}</p>}
+        {!!view.progress.length && <div className="trainer-highlights">{view.progress.map(p => (
+          <div key={p.exerciseId} className="trainer-highlight"><strong>{exName(p)}</strong><span>{t('best {0} {1} over {2} sessions', p.bestLoad, view.unit, p.sessions)}</span></div>
+        ))}</div>}
+        {!!view.workouts.length && <div className="trainer-history"><h3 className="sect-t">{t('Recent workouts')}</h3>{view.workouts.map(w => (
+          <div key={w.id} className="trainer-workout">
+            <h4>{w.date}</h4>
+            {w.exercises.map((e, i) => <p key={i}><strong>{exName(e)}</strong><span>{e.sets.map(s => setLine(s, view.unit)).join(', ')}</span></p>)}
           </div>
-        ))}
+        ))}</div>}
       </>}
     </section>
   )

@@ -11,7 +11,9 @@ vi.mock('./api.js', () => ({
   gymMembers: vi.fn(), gymInvitations: vi.fn(), createInvitation: vi.fn(), revokeInvitation: vi.fn(),
   assignTrainer: vi.fn(), endMembership: vi.fn(), platformMe: vi.fn(),
 }))
+vi.mock('../lib/clipboard.js', () => ({ copyText: vi.fn(async () => true) }))
 const api = await import('./api.js')
+const clipboard = await import('../lib/clipboard.js')
 const { default: Owner } = await import('./Owner.jsx')
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -34,6 +36,7 @@ const click = async el => { await act(async () => { el.dispatchEvent(new MouseEv
 
 beforeEach(() => {
   for (const f of Object.values(api)) f.mockReset?.()
+  clipboard.copyText.mockClear()
   api.gymMembers.mockResolvedValue(MEMBERS)
   api.gymInvitations.mockResolvedValue({ invitations: [{ id: 'i1', role: 'member', expiresAt: '2026-11-01T00:00:00Z', consumedAt: null, revokedAt: null }] })
   host = document.createElement('div'); document.body.append(host); root = createRoot(host)
@@ -56,6 +59,9 @@ describe('the owner screen', () => {
     await click(button('Invite a member'))
     expect(api.createInvitation).toHaveBeenCalledWith('g1', 'member')
     expect(host.textContent).toContain('gi_secret_token')
+    expect(button('Copy link')?.classList.contains('primary')).toBe(true)
+    await click(button('Copy link'))
+    expect(clipboard.copyText).toHaveBeenCalledWith(expect.stringContaining('#/gym/join?token=gi_secret_token'))
     expect(JSON.stringify({ ...localStorage })).not.toContain('gi_secret_token')
   })
 

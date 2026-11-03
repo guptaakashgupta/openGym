@@ -1321,6 +1321,7 @@ export default {
   // Gym check-in (mobile-only)
   'Check in': '签到',
   'At the gym': '在健身房',
+  'Gym': '健身房',
   'Show this at the gym': '在健身房出示这个',
   'Add your gym card': '添加你的会员卡',
   'Add a card': '添加卡片',
