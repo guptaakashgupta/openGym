@@ -7,4 +7,16 @@ if [ "${RESOLVER:-}" = system ]; then
     exit 1
   fi
   export RESOLVER
+  # nginx's async resolver does not apply resolv.conf search domains. Render
+  # supplies a short private service name that libc resolves with this suffix.
+  case "${BACKEND:-}" in
+    ""|*.*|*:*) ;;
+    *)
+      search_domain=$(awk '$1 == "search" { print $2; exit }' /etc/resolv.conf)
+      if [ -n "$search_domain" ]; then
+        BACKEND="$BACKEND.$search_domain"
+        export BACKEND
+      fi
+      ;;
+  esac
 fi
