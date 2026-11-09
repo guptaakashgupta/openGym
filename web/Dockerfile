@@ -35,8 +35,6 @@ ARG APP_BUILD=""
 # (frontend/scripts/build-pilot.mjs): its own identity, and exercise media only from a licensed
 # manifest. Unset: the upstream app, with the catalogue's media.
 ARG PILOT_PRODUCT=""
-# Pilot branding uses sharp; its native install was skipped by npm ci above.
-RUN if [ -n "$PILOT_PRODUCT" ]; then npm rebuild sharp; fi
 ARG RENDER_GIT_COMMIT=""
 # Render identifies the exact source revision used for this product build.
 RUN if [ -n "$RENDER_GIT_COMMIT" ] && [ -n "$PILOT_PRODUCT" ]; then \

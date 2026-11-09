@@ -55,3 +55,22 @@ than individual visitors; verify this before opening registration broadly.
 
 No database, services, DNS records or paid resources are created by these files
 alone. Review actual Render prices at provisioning; staging is separate.
+
+## Provisioned production resources (2026-11-09)
+
+- Web: https://dashboard.render.com/web/srv-dbonab95efls73edv2u0
+- API: https://dashboard.render.com/pserv/srv-dbona53m8hqs73ef6m4g
+- PostgreSQL: https://dashboard.render.com/d/dpg-dbon86psrm7s73ch4sm0-a
+- DNS: `gym` CNAME `askpocket-gym-web.onrender.com` at Porkbun.
+- PostgreSQL external access: Render Singapore outbound ranges
+  `74.220.52.0/24` and `74.220.60.0/24` (recheck via the outbound-ips API if changed).
+
+These resources were created with the Render API, not linked as a Blueprint.
+The YAML describes the equivalent service configuration for review and future setup.
+The API's initial migrations applied 001 through 011 successfully. Secrets remain
+in Render and are not recorded here. The database is a single-node 1 GB plan with
+15 GB storage. Do not recreate it to update application services.
+
+The pilot image uses sharp 0.34.5, whose native binaries come from npm optional
+packages. Keep npm ci --ignore-scripts: rebuilding all sharp copies also runs the
+older transitive Capacitor dependency, whose GitHub download can time out.
