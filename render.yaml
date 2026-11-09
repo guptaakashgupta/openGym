@@ -1,0 +1,71 @@
+# Production pilot. See docs/ops/RENDER_DEPLOY.md for database bootstrap and DNS.
+services:
+  - type: web
+    name: askpocket-gym-web
+    runtime: docker
+    region: singapore
+    plan: 0.5c-512mb
+    branch: pilot/gym-platform
+    dockerfilePath: ./web/Dockerfile
+    dockerContext: .
+    autoDeployTrigger: off
+    domains:
+      - gym.askpocket.in
+    healthCheckPath: /api/health
+    envVars:
+      - key: PILOT_PRODUCT
+        value: deploy/pilot/product.render.json
+      - key: NGINX_PORT
+        value: "10000"
+      # This image's PORT means upstream API port, not nginx's listening port.
+      - key: PORT
+        value: "10000"
+      - key: BACKEND
+        fromService:
+          type: pserv
+          name: askpocket-gym-api
+          property: host
+      - key: RESOLVER
+        value: system
+  - type: pserv
+    name: askpocket-gym-api
+    runtime: docker
+    region: singapore
+    plan: 0.5c-512mb
+    branch: pilot/gym-platform
+    dockerfilePath: ./api/Dockerfile
+    dockerContext: ./api
+    autoDeployTrigger: off
+    numInstances: 1
+    preDeployCommand: node scripts/migrate.mjs
+    disk:
+      name: gym-files
+      mountPath: /var/gym
+      sizeGB: 10
+    envVars:
+      - key: OPENGYM_MODE
+        value: product
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+      - key: RP_ID
+        value: gym.askpocket.in
+      - key: ORIGIN
+        value: https://gym.askpocket.in
+      - key: RP_NAME
+        value: Pilot Gym
+      - key: DATA_DIR
+        value: /var/gym/data
+      - key: OBJECT_STORE
+        value: fs:/var/gym/objects
+      - key: TRUST_PROXY
+        value: "1"
+      - key: VAPID_SUBJECT
+        value: https://gym.askpocket.in
+      - key: SESSION_SECRET
+        generateValue: true
+      # External Render PostgreSQL URL with sslmode=verify-full. Do not use
+      # fromDatabase connectionString: the internal endpoint cannot verify TLS.
+      - key: DATABASE_URL
+        sync: false

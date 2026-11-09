@@ -1,0 +1,10 @@
+#!/bin/sh
+# Sourced by nginx's entrypoint, before envsubst. Opt in on non-Compose hosts.
+if [ "${RESOLVER:-}" = system ]; then
+  RESOLVER=$(awk '$1 == "nameserver" && $2 ~ /^[0-9.]+$/ { print $2; exit }' /etc/resolv.conf)
+  if [ -z "$RESOLVER" ]; then
+    echo "No IPv4 nameserver in /etc/resolv.conf" >&2
+    exit 1
+  fi
+  export RESOLVER
+fi

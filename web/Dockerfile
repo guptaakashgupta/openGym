@@ -35,6 +35,12 @@ ARG APP_BUILD=""
 # (frontend/scripts/build-pilot.mjs): its own identity, and exercise media only from a licensed
 # manifest. Unset: the upstream app, with the catalogue's media.
 ARG PILOT_PRODUCT=""
+# Pilot branding uses sharp; its native install was skipped by npm ci above.
+RUN if [ -n "$PILOT_PRODUCT" ]; then npm rebuild sharp; fi
+ARG RENDER_GIT_COMMIT=""
+# Render identifies the exact source revision used for this product build.
+RUN if [ -n "$RENDER_GIT_COMMIT" ] && [ -n "$PILOT_PRODUCT" ]; then \
+      node -e 'const fs=require("fs"); const p="/app/"+process.argv[1]; const v=JSON.parse(fs.readFileSync(p)); v.source.offerUrl=v.source.offerUrl.replace("{commit}",process.argv[2]); fs.writeFileSync(p,JSON.stringify(v));' "$PILOT_PRODUCT" "$RENDER_GIT_COMMIT"; fi
 RUN if [ -n "$PILOT_PRODUCT" ]; then \
       APP_BUILD="$APP_BUILD" PILOT_PRODUCT="/app/$PILOT_PRODUCT" node scripts/build-pilot.mjs --out dist; \
     else APP_BUILD="$APP_BUILD" npm run build && cp -R /app/catalogue-media dist/exercise-media; fi
@@ -96,6 +102,7 @@ COPY web/nginx.conf.template /etc/nginx/templates/default.conf.template
 # of a server that 404s under the prefix. nginx's entrypoint runs these scripts in order; 05 is
 # before the template rendering at 20.
 COPY --chmod=755 web/05-check-base-path.sh /docker-entrypoint.d/
+COPY --chmod=755 web/06-platform.envsh /docker-entrypoint.d/
 COPY --from=build /app/frontend/dist /usr/share/nginx/html
 # The upstream build's dist/ holds the exercise media (exercise-media/, see the build stage); they
 # ship inside the image and nothing is downloaded at start-up. A pilot product image holds none
