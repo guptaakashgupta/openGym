@@ -33,6 +33,7 @@ export function validateProduct(p) {
   const errors = []
   if (!p || typeof p !== 'object') return ['the product file is not a JSON object']
   if (typeof p.productName !== 'string' || !p.productName.trim()) errors.push('productName is required')
+  if (p.icon !== undefined && (typeof p.icon !== 'string' || !/\.(svg|png)$/i.test(p.icon) || !fs.existsSync(p.icon))) errors.push('icon must point to an existing SVG or PNG file')
   if (typeof p.appId !== 'string' || !APP_ID_RE.test(p.appId)) errors.push('appId must be a reverse-DNS id such as com.example.app')
   else if (UPSTREAM_IDS.some(id => p.appId === id || p.appId.startsWith(id + '.'))) errors.push(`appId ${p.appId} is upstream openGym's`)
   let url = null

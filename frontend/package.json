@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:pilot": "PILOT_PRODUCT=../deploy/pilot/product.example.json vite",
     "build": "vite build",
     "build:mobile": "rm -f android/pilot.properties && VITE_MOBILE=1 vite build && node ../scripts/catalogue/stage-media.mjs dist && cap sync && node scripts/check-mobile-bundle.mjs",
     "build:pilot": "node scripts/build-pilot.mjs",
@@ -39,6 +40,7 @@
     "@vitest/coverage-v8": "^4.1.11",
     "happy-dom": "^20.11.2",
     "linkedom": "^0.18.13",
+    "sharp": "0.32.6",
     "vite": "^8.1.5",
     "vitest": "^4.1.10"
   }

@@ -14,7 +14,11 @@ import { validateProduct, checkPilotBundle } from './check-pilot-bundle.mjs'
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const EXAMPLE = path.resolve(FRONTEND, '../deploy/pilot/product.example.json')
-const product = () => JSON.parse(fs.readFileSync(EXAMPLE, 'utf8'))
+const product = () => {
+  const p = JSON.parse(fs.readFileSync(EXAMPLE, 'utf8'))
+  if (p.icon) p.icon = path.resolve(path.dirname(EXAMPLE), p.icon)
+  return p
+}
 const sha = b => crypto.createHash('sha256').update(b).digest('hex')
 const VERSION = JSON.parse(fs.readFileSync(path.join(FRONTEND, 'package.json'), 'utf8')).version
 

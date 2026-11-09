@@ -6,6 +6,37 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { lazyAssets, stampSw } from './scripts/sw-stamp.mjs'
 
+// The regular dev server shows upstream openGym. `npm run dev:pilot` reads the same
+// product file as the pilot build and previews its name and icon against the local API.
+const pilotPreview = process.env.PILOT_PRODUCT && process.env.VITE_PILOT !== '1'
+  ? (() => {
+      const productFile = resolve(process.cwd(), process.env.PILOT_PRODUCT)
+      const product = JSON.parse(readFileSync(productFile, 'utf8'))
+      const icon = product.icon && resolve(productFile, '..', product.icon)
+      const iconUrl = icon && `/pilot-icon.${icon.toLowerCase().endsWith('.png') ? 'png' : 'svg'}`
+      process.env.VITE_PILOT_NAME = product.productName
+      if (icon) process.env.VITE_PILOT_ICON = iconUrl
+      return {
+        name: 'pilot-brand-preview',
+        apply: 'serve',
+        configureServer(server) {
+          if (!icon) return
+          server.middlewares.use(iconUrl, (req, res) => {
+            res.setHeader('Content-Type', iconUrl.endsWith('.png') ? 'image/png' : 'image/svg+xml')
+            res.end(readFileSync(icon))
+          })
+        },
+        transformIndexHtml(html) {
+          const name = product.productName.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
+          return html.replace(/<title>[^<]*<\/title>/, `<title>${name}</title>`)
+            .replace(/(<meta name="apple-mobile-web-app-title" content=")[^"]*/, `$1${name}`)
+            .replace(/href="icon-180.png"/g, iconUrl ? `href="${iconUrl}"` : 'href="icon-180.png"')
+            .replace(/<link rel="icon" type="image\/png"/, `<link rel="icon" type="${iconUrl && !iconUrl.endsWith('.png') ? 'image/svg+xml' : 'image/png'}"`)
+        }
+      }
+    })()
+  : null
+
 const backend = process.env.API_TARGET || 'http://127.0.0.1:3000'
 // The API refuses a state-changing request that a browser sent from anywhere other than its own
 // ORIGIN (the CSRF guard in api/server.js). The dev server is on a different port, so the page's
@@ -102,7 +133,7 @@ const appVersion = process.env.APP_BUILD ? `${pkgVersion}+${process.env.APP_BUIL
 
 export default defineConfig({
   define: { __APP_VERSION__: JSON.stringify(appVersion) },
-  plugins: [react(), umami, flavor, swStamp, catalogueMedia],
+  plugins: [react(), pilotPreview, umami, flavor, swStamp, catalogueMedia].filter(Boolean),
   base: './',
   server: {
     // The Coach's core (payload, validator, prompts, HTTP adapters) lives in ../api/coach/core

@@ -1,5 +1,6 @@
 {
-  "productName": "Example Gym",
+  "productName": "Pilot Gym",
+  "icon": "pilot-gym-icon.svg",
   "appId": "com.example.gympilot",
   "server": "https://gym.example.com",
   "media": { "mode": "placeholder" },

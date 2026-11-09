@@ -11,7 +11,7 @@ import { Button, Segmented } from '../components/ui.jsx'
 import { askAddDeviceData } from '../sheets.jsx'
 import { passwordOn, PasswordRegisterForm, openPasswordSignIn } from '../components/PasswordAuth.jsx'
 import { openDeviceLinkRedeem } from '../components/Passkeys.jsx'
-import { PRODUCT } from '../platform/config.js'
+import { PRODUCT, PRODUCT_NAME, PRODUCT_ICON } from '../platform/config.js'
 import { pendingJoinToken, clearJoinToken } from '../platform/join-token.js'
 import { previewInvitation, redeemInvitation } from '../platform/api.js'
 import { describeError } from '../platform/ui-errors.js'
@@ -109,8 +109,8 @@ export default function Login() {
     catch (e) { if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') useUI.getState().toast(passkeyError(e, t('Sign-in failed'))) }
   }
   const head = <>
-    <div style={{ fontSize: 54, display: 'flex', justifyContent: 'center', color: 'var(--acc)' }}><Icon name="dumbbell" /></div>
-    <h1 style={{ fontSize: 34, fontWeight: 700, letterSpacing: '-.028em', margin: '10px 0 4px' }}>openGym</h1>
+    <div style={{ fontSize: 54, display: 'flex', justifyContent: 'center', color: 'var(--acc)' }}>{PRODUCT_ICON ? <img src={PRODUCT_ICON} alt="" width="64" height="64" style={{ borderRadius: 14 }} /> : <Icon name="dumbbell" />}</div>
+    <h1 style={{ fontSize: 34, fontWeight: 700, letterSpacing: '-.028em', margin: '10px 0 4px' }}>{PRODUCT_NAME}</h1>
   </>
   const wrap = { display: 'flex', flexDirection: 'column', justifyContent: 'center', minHeight: '78vh', textAlign: 'center' }
 

@@ -15,7 +15,7 @@ android {
     }
     defaultConfig {
         applicationId pilot.getProperty('applicationId', "ch.duartesantos.opengym")
-        manifestPlaceholders = [appLabel: pilot.getProperty('appLabel', "@string/app_name"), activityLabel: pilot.getProperty('appLabel', "@string/title_activity_main")]
+        manifestPlaceholders = [appLabel: pilot.getProperty('appLabel', "@string/app_name"), activityLabel: pilot.getProperty('appLabel', "@string/title_activity_main"), appIcon: pilot.getProperty('appIcon', '@mipmap/ic_launcher'), appRoundIcon: pilot.getProperty('appIcon', '@mipmap/ic_launcher_round')]
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 27
@@ -65,6 +65,8 @@ android {
         }
     }
 }
+
+if (pilotFile.exists()) android.sourceSets.main.res.srcDirs += ['../pilot-res']
 
 repositories {
     flatDir{

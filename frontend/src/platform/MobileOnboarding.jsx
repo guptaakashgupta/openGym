@@ -5,10 +5,9 @@
 import { useState } from 'react'
 import { useStore } from '../store/useStore.js'
 import { t } from '../lib/i18n.js'
-import Icon from '../components/Icon.jsx'
 import { Button } from '../components/ui.jsx'
 import { askAddDeviceData } from '../sheets.jsx'
-import { PILOT_SERVER } from './config.js'
+import { PILOT_SERVER, PRODUCT_NAME } from './config.js'
 
 export default function PilotOnboarding() {
   const { connectToServer } = useStore()
@@ -17,8 +16,8 @@ export default function PilotOnboarding() {
   const [error, setError] = useState('')
   const wrap = { display: 'flex', flexDirection: 'column', justifyContent: 'center', minHeight: '78vh', textAlign: 'center' }
   const head = <>
-    <div style={{ fontSize: 54, display: 'flex', justifyContent: 'center', color: 'var(--acc)' }}><Icon name="dumbbell" /></div>
-    <h1 style={{ fontSize: 34, fontWeight: 700, letterSpacing: '-.028em', margin: '10px 0 4px' }}>openGym</h1>
+    <div style={{ display: 'flex', justifyContent: 'center' }}><img src="icon-180.png" alt="" width="88" height="88" style={{ borderRadius: 20 }} /></div>
+    <h1 style={{ fontSize: 34, fontWeight: 700, letterSpacing: '-.028em', margin: '10px 0 4px' }}>{PRODUCT_NAME}</h1>
   </>
   if (!PILOT_SERVER) return (
     <div className="narrow" style={wrap}>

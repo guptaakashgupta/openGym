@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 const state = vi.hoisted(() => ({ sheets: [], setUser: vi.fn(), pullState: vi.fn(async () => {}), loadConfig: vi.fn(async () => {}) }))
-vi.mock('../platform/config.js', () => ({ PRODUCT: true }))
+vi.mock('../platform/config.js', () => ({ PRODUCT: true, PRODUCT_NAME: 'Pilot Gym', PRODUCT_ICON: null }))
 vi.mock('../platform/api.js', () => ({ previewInvitation: vi.fn(), redeemInvitation: vi.fn() }))
 vi.mock('../store/useStore.js', () => {
   const snapshot = () => ({ config: { invite_only: false, allow_guest: true }, S: {}, setUser: state.setUser,

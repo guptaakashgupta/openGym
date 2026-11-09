@@ -15,6 +15,7 @@ A JSON file, `deploy/pilot/product.example.json` shows every field:
 | Field | Meaning |
 | --- | --- |
 | `productName` | The app's name: launcher label, web app manifest, page title |
+| `icon` | Optional SVG or PNG path relative to the product file; used for web/PWA icons and Android launcher icon |
 | `appId` | Reverse-DNS application id; never upstream's (`ch.duartesantos.opengym`, `ch.opengym.app`) |
 | `server` | The service's https origin, built in (the phone pairs only with it) |
 | `media.mode` | `placeholder`: no exercise media anywhere. `licensed`: only the files of `media.manifest` |
@@ -27,6 +28,7 @@ A JSON file, `deploy/pilot/product.example.json` shows every field:
 
 ```sh
 cd frontend
+npm run dev:pilot                                                # local branding preview at localhost:5173
 PILOT_PRODUCT=../deploy/pilot/product.json npm run build:pilot          # web, into dist-pilot/
 PILOT_PRODUCT=../deploy/pilot/product.json npm run build:mobile:pilot   # dist/ + cap sync android
 node scripts/check-pilot-bundle.mjs ../deploy/pilot/product.json dist-pilot   # the gates alone
@@ -40,6 +42,9 @@ the upstream build moves them into what is served.
 `build:mobile:pilot` writes `frontend/android/pilot.properties` (not committed): the application
 id and launcher label that `android/app/build.gradle` reads. `npm run build:mobile` removes it
 first, so an upstream build never inherits the product's identity.
+The example uses the temporary name **Pilot Gym** and `deploy/pilot/pilot-gym-icon.svg`.
+Replace `productName` and `icon` in your own product file when the final branding is ready.
+The build renders 180px and 512px web icons and an Android launcher icon from that source.
 
 ## What the gates check (`frontend/scripts/check-pilot-bundle.mjs`)
 

@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const cfg = vi.hoisted(() => ({ PRODUCT: true, PILOT_SERVER: 'https://gym.example.com' }))
 vi.mock('./config.js', async importOriginal => {
   const real = await importOriginal()
-  return { get PRODUCT() { return cfg.PRODUCT }, get PILOT_SERVER() { return cfg.PILOT_SERVER }, pilotServer: real.pilotServer }
+  return { get PRODUCT() { return cfg.PRODUCT }, get PILOT_SERVER() { return cfg.PILOT_SERVER }, PRODUCT_NAME: 'Pilot Gym', pilotServer: real.pilotServer }
 })
 const files = vi.hoisted(() => new Map())
 vi.mock('../lib/mobile.js', async importOriginal => ({

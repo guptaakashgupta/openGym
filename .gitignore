@@ -15,6 +15,7 @@ frontend/dist/
 # generated Android identity.
 frontend/dist-pilot/
 frontend/android/pilot.properties
+frontend/android/pilot-res/
 # Per-environment copies of the pilot deployment templates (deploy/pilot/*.example).
 deploy/pilot/.env
 deploy/pilot/Caddyfile
