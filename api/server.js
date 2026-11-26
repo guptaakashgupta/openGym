@@ -252,8 +252,19 @@ const isOwner = user => CONFIG.mode === 'file' && !!user && isAdmin(user) && use
 // check every trainer, gym and library route asks (permissions.js).
 const org = createOrgStore({ file: path.join(DATA, 'org.json'), leadMode: TRAINERS_LEAD_ACCESS });
 const shareLog = createShareLog({ dir: path.join(DATA, 'share'), keepDays: Math.max(0, +(process.env.SHARE_LOG_DAYS || 365) || 0) });
+// Accounts as permissions.js and the trainer routes read them: synchronously, as upstream reads
+// db.users. Product mode keeps accounts in PostgreSQL, so every trainer request starts by reading
+// the users table once (withUsers, at the routes); a disabled account counts from the next request.
+// org.json and share/ stay files under DATA_DIR on the Render disk (PILOT_ENDPOINT_MATRIX.md).
+// ponytail: the whole users table per trainer request; per-id queries if accounts reach the thousands.
+let usersNow = new Map();
+const accountById = CONFIG.mode === 'file' ? id => db.users.find(u => u.id === id) || null : id => usersNow.get(id) || null;
+const withUsers = routes => (CONFIG.mode === 'file' ? routes : Object.fromEntries(Object.entries(routes).map(([key, handle]) => [key, async (req, res) => {
+  usersNow = new Map((await IDENTITY.listUsers()).map(u => [u.id, u]));
+  return handle(req, res);
+}])));
 const perms = createPermissions({
-  org, userById: id => db.users.find(u => u.id === id) || null, isAdmin, isOwner,
+  org, userById: accountById, isAdmin, isOwner,
   flags: () => ({ trainers: TRAINERS, adminDataView: ADMIN_DATA_VIEW, sharing: LIBRARY.on })
 });
 const budgets = createBudgets();
@@ -2431,14 +2442,16 @@ function dataWritable() {
 // The trainer feature's routes (docs/TRAINERS.md): roles and consent (trainers/routes.js) and the
 // dashboard on top of it (trainers/dashboard-routes.js), sharing one guard and one sharing log.
 const NUTRITION = nutritionSourceFrom(process.env);
-const trainerNotify = createNotify({ log: shareLog, sendPush: (uid, p) => sendPush(uid, p), langOf: uid => readStateCached(uid)?.lang || 'en' });
+// A member's language and state for the trainer routes: the stat cache in file mode, PostgreSQL in product mode.
+const trainerState = uid => (CONFIG.mode === 'file' ? readStateCached(uid) : STATE.readMemberState(uid));
+const trainerNotify = createNotify({ log: shareLog, sendPush: (uid, p) => sendPush(uid, p), langOf: async uid => (await trainerState(uid))?.lang || 'en' });
 const trainerRolesOf = uid => {
   const r = org.rolesOf(uid);
   return { trainer: r.freeTrainer || r.staff.some(x => x.role === 'trainer' && org.activeGym(x.gymId)), lead: r.staff.some(x => x.role === 'lead' && org.activeGym(x.gymId)) };
 };
 const trainerApi = trainerRoutes({
   json, readBody, readSession, requireAdmin, isAdmin, audit, origin: ORIGIN,
-  userById: id => db.users.find(u => u.id === id) || null,
+  userById: accountById,
   addressOf: req => limitAddress(req),
   org, perms, log: shareLog, budgets, codeGuard, on: () => TRAINERS, notify: trainerNotify, nutrition: NUTRITION
 });
@@ -2684,7 +2697,7 @@ const routes = {
       // Trainers and studios (docs/TRAINERS.md): only to a session and only when on, so the app
       // shows no trace of the feature anywhere else.
       // `roles` decides whether the app shows the trainer dashboard; every route checks again anyway.
-      ...(fileMode && TRAINERS && me ? { trainers: { on: true, leadAccess: org.leadMode, roles: trainerRolesOf(me.id) } } : {})
+      ...(TRAINERS && me ? { trainers: { on: true, leadAccess: org.leadMode, roles: trainerRolesOf(me.id) } } : {})
     });
   },
 
@@ -3688,13 +3701,14 @@ const routes = {
   /* ---------- trainers, gym leads, studios ---------- */
   // trainers/routes.js. Every decision about another profile is permissions.js; with TRAINERS
   // off the routes answer 404 'trainers-off'.
-  ...trainerApi.routes,
-  ...dashboardRoutes({
-    json, readBody, audit, origin: ORIGIN, userById: id => db.users.find(u => u.id === id) || null,
+  ...withUsers(trainerApi.routes),
+  ...withUsers(dashboardRoutes({
+    json, readBody, audit, origin: ORIGIN, userById: accountById,
     org, perms, log: shareLog, budgets, notify: trainerNotify, nutrition: NUTRITION, helpers: trainerApi.helpers,
-    state: { read: uid => readStateCached(uid), write: writeStateAs },
-    media: MEDIA_ON ? { file: (uid, hash) => MEDIA.file(uid, hash), send: sendMediaFile } : null
-  }),
+    state: { read: trainerState, write: writeStateAs },
+    // Product mode's media store opens an object (platform/uploads.js open); file mode hands a path.
+    media: MEDIA_ON ? { file: (uid, hash) => (MEDIA.open ? MEDIA.open(uid, hash) : MEDIA.file(uid, hash)), send: sendMediaFile } : null
+  })),
 
   /* ---------- the community library ---------- */
   // library/routes.js and library/moderation.js; with LIBRARY off they answer 404 'sharing-off'.
@@ -3772,10 +3786,10 @@ async function refuseSignup(req, res, invite) {
 }
 // Upstream surfaces whose data lives in db.json or other DATA_DIR files product mode does not keep
 // (docs/plans/2026-11-26-adopt-upstream-trainers.md step 2): the watch relay, scoped tokens and
-// the MCP connector's OAuth, the calendar feed, the community library, integrations, and, until
-// they run on the PostgreSQL seam (step 3), trainers and sharing.
+// the MCP connector's OAuth, the calendar feed, the community library and integrations. Trainers
+// and sharing open with TRAINERS on (step 3); their admin routes stay under /api/admin/* (step 4).
 const PRODUCT_CLOSED = ['/api/coach', '/api/oidc', '/api/watch', '/api/tokens', '/api/token', '/api/oauth', '/api/calendar',
-  '/api/shared', '/api/integrations', '/api/sharing', '/api/trainer', '/api/gym'];
+  '/api/shared', '/api/integrations', ...(TRAINERS ? [] : ['/api/sharing', '/api/trainer', '/api/gym'])];
 const productUnavailable = key => {
   const path = key.slice(key.indexOf(' ') + 1);
   if (path.startsWith('/api/admin/')) return path !== '/api/admin/user/password-reset';

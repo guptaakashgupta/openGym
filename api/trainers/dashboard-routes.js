@@ -81,8 +81,8 @@ export function dashboardRoutes({ json, readBody, userById, audit, org, perms, l
   const summaryLine = sums => sums.map(s => `${s.kind}${s.name ? ' ' + s.name : ''}${s.d ? ' ' + s.d : ''}`).join(', ').slice(0, 200);
 
   /** A suggestion: what it would do, worked out on a copy (so it is checked now, not at accept). */
-  function suggest(member, ops, by, grantId, message) {
-    const S = state.read(member.id) || {};
+  async function suggest(member, ops, by, grantId, message) {
+    const S = (await state.read(member.id)) || {};
     const preview = applyOps(JSON.parse(JSON.stringify(S)), ops, { by, t: nowMs() }).map(r => r.summary);
     const item = log.addInbox(member.id, { kind: 'suggest', from: by, grantId, ops, summary: preview, cats: [...new Set(ops.map(o => OP_CATEGORY[o.op]))], ...(message ? { message } : {}) });
     log.append(member.id, { ev: 'suggest.new', actor: by, cat: item.cats[0], msg: summaryLine(preview) });
@@ -130,7 +130,7 @@ export function dashboardRoutes({ json, readBody, userById, audit, org, perms, l
         const paused = pausedWhy(g);
         const levels = {};
         for (const c of CATEGORY_IDS) { const r = perms.can(user, 'view', { memberId: m.id }, c); levels[c] = r.ok && r.via === g.id ? r.level : 'off'; }
-        const S = paused ? null : state.read(m.id);
+        const S = paused ? null : await state.read(m.id);
         const sum = summarize(S, levels, { today, inactiveDays, pending: pendingFrom(m.id, user.id) });
         if (!paused && levels.metrics !== 'off') lookedAt(m.id, { kind: 'trainer', id: user.id, name: user.name }, ['metrics']);
         members.push({ grantId: g.id, member: person(m.id), gym: g.gymId ? { id: g.gymId, name: org.gym(g.gymId)?.name || '' } : null,
@@ -150,7 +150,7 @@ export function dashboardRoutes({ json, readBody, userById, audit, org, perms, l
       if (!acc.any) return refuse(res, user, member.id);
       const today = todayOf(req);
       const before = isISO(q.get('before')) ? q.get('before') : null;
-      const S = state.read(member.id);
+      const S = await state.read(member.id);
       let nut = null;
       if (acc.levels.nutrition !== 'off' && nutrition) {
         const status = nutrition.status(member.id);
@@ -188,7 +188,7 @@ export function dashboardRoutes({ json, readBody, userById, audit, org, perms, l
       if (acc.levels.photos === 'off') return json(res, 403, { error: 'they do not share their photos with you', code: 'level' });
       const hash = String(q.get('hash') || '');
       if (!/^[0-9a-f]{64}$/.test(hash)) return json(res, 400, { error: 'hash must be a lowercase sha256', code: 'bad-request' });
-      const f = media && progressPhotos(state.read(member.id)).some(p => p.hash === hash) ? media.file(member.id, hash) : null;
+      const f = media && progressPhotos(await state.read(member.id)).some(p => p.hash === hash) ? await media.file(member.id, hash) : null;
       if (!f) return json(res, 404, { error: 'no such photo', code: 'media-missing' });
       lookedAt(member.id, actorOf(user, acc.via.photos), ['photos']);
       await media.send(res, f, hash);
@@ -213,7 +213,7 @@ export function dashboardRoutes({ json, readBody, userById, audit, org, perms, l
           undo = (await applyFor(member, tri.apply, by, { grantId: tri.via })).undo;
           notify.push(member.id, 'change', [user.name]);
         }
-        if (tri.sugg.length) item = suggest(member, tri.sugg, by, tri.via, message);
+        if (tri.sugg.length) item = await suggest(member, tri.sugg, by, tri.via, message);
         json(res, 200, { ok: true, applied: tri.apply.length, suggested: tri.sugg.length, refused: tri.refused.length, undoId: undo?.id || null, suggestionId: item?.id || null });
       } catch (e) { if (opFail(res, e)) return; throw e; }
     }),
@@ -224,7 +224,7 @@ export function dashboardRoutes({ json, readBody, userById, audit, org, perms, l
       const body = await readBody(req);
       const ids = (Array.isArray(body.memberIds) ? body.memberIds : []).map(idOf).filter(Boolean);
       if (!ids.length || ids.length > 50) return json(res, 400, { error: 'one to 50 members', code: 'members' });
-      const own = state.read(user.id) || {};
+      const own = (await state.read(user.id)) || {};
       const src = (Array.isArray(own.routines) ? own.routines : []).find(r => r && String(r.id) === String(body.routineId));
       if (!src) return json(res, 404, { error: 'no such routine of yours', code: 'no-routine' });
       const day = body.day == null || body.day === '' ? null : Number(body.day);
@@ -258,7 +258,7 @@ export function dashboardRoutes({ json, readBody, userById, audit, org, perms, l
             notify.push(mid, 'change', [user.name]);
             results.push({ memberId: mid, name, outcome: 'applied' });
           } else {
-            suggest(member, ops, by, s.via, message);
+            await suggest(member, ops, by, s.via, message);
             results.push({ memberId: mid, name, outcome: 'suggested' });
           }
         } catch (e) {
@@ -280,7 +280,7 @@ export function dashboardRoutes({ json, readBody, userById, audit, org, perms, l
       if (!may.ok) return may.status === 403 ? json(res, 403, { error: 'they do not share workouts with you', code: may.reason }) : refuse(res, user, member.id);
       const msg = text(body.text, 1000);
       if (!msg) return json(res, 400, { error: 'say something first', code: 'empty' });
-      const S = state.read(member.id) || {};
+      const S = (await state.read(member.id)) || {};
       const w = (Array.isArray(S.workouts) ? S.workouts : []).find(x => x && String(x.id ?? `${x.d}|${x.start}`) === String(body.workoutId));
       if (!w) return json(res, 404, { error: 'no such workout', code: 'no-workout' });
       const by = actorOf(user, may.via);
@@ -320,7 +320,7 @@ export function dashboardRoutes({ json, readBody, userById, audit, org, perms, l
         const lead = gymGrants.find(g => g.kind === 'lead' && g.memberId === u.id);
         const levels = lead ? cleanScopes(lead.scopes, 'view') : cleanScopes({}, 'view');
         const shares = CATEGORY_IDS.filter(c => rank(levels[c]) > 0);
-        const S = shares.length ? state.read(u.id) : null;
+        const S = shares.length ? await state.read(u.id) : null;
         const sum = summarize(S, levels, { today });
         if (levels.metrics !== 'off') lookedAt(u.id, { kind: 'lead', id: user.id, name: user.name }, ['metrics']);
         members.push({ member: person(u.id), since: m.since, sharesWithLead: shares.length > 0, levels,
@@ -463,7 +463,7 @@ export function dashboardRoutes({ json, readBody, userById, audit, org, perms, l
       const today = todayOf(req);
       const nut = levels.nutrition !== 'off' ? { status: nutrition ? nutrition.status(user.id) : 'not-linked' } : null;
       json(res, 200, { member: person(user.id), today, levels: cleanScopes(g.scopes, g.kind === 'lead' ? 'view' : 'apply'),
-        ...project(state.read(user.id), levels, { today, nutrition: nut }), comments: [], suggestions: [], changes: [] });
+        ...project(await state.read(user.id), levels, { today, nutrition: nut }), comments: [], suggestions: [], changes: [] });
     }),
   };
 }

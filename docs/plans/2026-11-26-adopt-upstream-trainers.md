@@ -33,31 +33,31 @@ history, body measurements and progress photos for a paid service. Have its word
 
 ## 2. Storage seam
 
-Upstream's trainer code is synchronous: it reads `db.users`, keeps `org.json` in memory, writes
-`share/<uid>.json` and member state through files. Product mode keeps identity and member state
-in PostgreSQL behind asynchronous stores (`api/storage/index.js`). Every dependency the trainer
-modules take from `server.js` becomes asynchronous; the modules `await` them.
+Decided 26 Nov 2026 (replaces the first draft, which moved `org.json` and the sharing log into
+PostgreSQL tables): **`org.json` and `share/<uid>.json` stay files under `DATA_DIR` on the Render
+disk**, as upstream keeps them. The disk already holds data that cannot be rebuilt
+(`OBJECT_STORE=fs:/var/gym/objects`), and the pilot runs one API instance, so the org store's
+in-memory copy is the authority between saves either way. Only accounts and member state, which
+product mode keeps in PostgreSQL, need a seam.
 
-| Dependency | Upstream | Product mode | Call sites (main) |
-| --- | --- | --- | --- |
-| User lookup `userById` | `db.users.find` | `IDENTITY.getUser` | 16 (`trainers/routes.js` 5, `dashboard-routes.js` 9, `permissions.js` 2) |
-| Permission check `perms.can()` | sync | `async`, still reads fresh state on every call (no cached `disabled` flags) | 14 |
-| Org store (`trainers/org-store.js`) | in-memory object, `mutate(fn)` then `atomicWrite(org.json)` | Same in-memory object, persisted as one JSONB row (`org_documents`, with a `version` column) in a transaction. `mutate` becomes `async` and resolves only after the commit; saves run one at a time through a queue. | 24 mutating calls (`routes.js` 15, `dashboard-routes.js` 6, `server.js` 3) |
-| Sharing log (`share-log.js`) | `DATA_DIR/share/<uid>.json` | `share_logs (user_id PK, document jsonb)`, same read-change-write per member in a transaction | ~5 file operations |
-| Member state write `writeStateAs(uid, fn)` | sync read, copy, `stampPut`, `_rev+1`, rename | `STATE.updateMemberState(uid, work)` (`api/storage/state-postgres.js`): row locked `FOR UPDATE`, same stamping and `_rev`/`_wid` steps inside `work` | 10 in `dashboard-routes.js` |
-| Member state read `readStateCached(uid)` | file cache | `STATE.readMemberState(uid)` | projections, notices (`langOf`) |
+| Dependency | Upstream | Product mode |
+| --- | --- | --- |
+| User lookup `userById` (trainer routes, dashboard, `permissions.js`) | `db.users.find` | Unchanged sync lookup in a snapshot of the `users` table that `server.js` (`withUsers`) reads at the start of every trainer request. A disabled account counts from the next request, as in file mode. `perms.can()` stays synchronous |
+| Member state read `state.read` (dashboard) and `langOf` (notices) | `readStateCached` | `STATE.readMemberState`; the 8 dashboard reads are awaited, `notify.js` resolves `langOf` before the push |
+| Member state write `writeStateAs` | sync read, stamp, `_rev+1`, rename | `STATE.updateMemberState` (done in step 2) |
+| Progress photo (`media.file`) | path on disk | `MEDIA.open` (object store), awaited |
+| Org store, sharing log | files | Same files on the Render disk |
 
-File mode keeps upstream's behaviour unchanged: the file-backed implementations wrap the same
-sync code in resolved promises.
+Trade-offs accepted: the disk snapshot and the database backup are two restore points; restored
+from different times, a grant can name a deleted account, which upstream already treats as not
+found (`usable(member)`). Account deletion removes the database rows first, then the files; it is
+not one transaction (the same holds for photos). The users snapshot reads the whole table per
+trainer request: fine for one gym, per-id queries if accounts reach the thousands. Several API
+instances would need the org data in tables; not pilot scope.
 
-Single API instance: the org store's in-memory copy is the authority between commits, which holds
-for one process only (pilot design section 2 already limits the pilot to one instance). Several
-instances would need the org data in tables, read per request. Upgrade path, not pilot scope.
-
-Upstream friendliness: the async seam is a candidate to offer upstream (an injectable store for
-`createOrgStore`, `createShareLog`, `createPermissions`). Until it is accepted, the patches to
-`api/trainers/*`, `permissions.js` and `share-log.js` are pilot customisations and are listed in
-`docs/dev/PILOT_CUSTOMISATIONS.md`.
+Upstream patches, listed in `docs/dev/PILOT_CUSTOMISATIONS.md`: `trainers/dashboard-routes.js`
+(awaited state reads), `trainers/notify.js` (async `langOf`). Both are harmless in file mode and
+candidates to offer upstream.
 
 ## 3. Sign-up and gym administration
 
@@ -135,16 +135,18 @@ pilot branding and bundle checks, the Render and Compose deployment.
 Tests:
 
 - Upstream's trainer suites (`server-trainers`, `server-trainer-dashboard`, `trainers-core`,
-  `trainer-ops`, `permissions`, `trainer-copy`) pass unchanged in file mode, and run again in
-  product mode against the PostgreSQL test harness.
+  `trainer-ops`, `permissions`, `trainer-copy`) pass unchanged in file mode. They seed `db.json`
+  and state files directly, so product mode is covered by `test/platform/trainers.test.js`
+  instead of a second run of them.
 - New: a second gym refused (`other-gym`) through both routes; a private trainer allowed alongside
   a gym; leaving then joining another gym.
 - New: sign-up with a valid trainer code succeeds and creates no grant; an expired, used or revoked
   code is refused; a member's connect after sign-up spends the use.
 - New: in product mode the gym and role admin routes answer, every other `/api/admin/*` route
   stays 404, and `ADMIN_DATA_VIEW` routes stay closed.
-- New: two concurrent org mutations both land (save queue); a failed commit leaves the in-memory
-  copy as it was and answers an error, never a success.
+- Step 3 (done): `api/test/platform/trainers.test.js` runs connect, list, detail, a direct change and
+  a stale phone in product mode, checks `org.json` and `share/` land on disk, and that a member
+  disabled in PostgreSQL drops out of the trainer's next request.
 - New: a trainer's direct change in product mode raises `_rev` once and survives a concurrent
   `PUT /api/data` from the member's phone (merge, not overwrite).
 
@@ -152,5 +154,5 @@ Tests:
 
 - Whether the migration runner needs contiguous numbers (affects renumbering 010–011).
 - The exact admin route list behind the Trainer & gym admin page, read from the merged code.
-- Whether upstream would accept the async store seam (section 2); ask before step 3 so it can be
-  written in a form they would take.
+- Whether upstream would take the two small patches in section 2 (awaited state reads, async
+  `langOf`).

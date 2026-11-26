@@ -16,11 +16,13 @@ export function trainerPush(lang, kind, names = [], body = null) {
 }
 
 export function createNotify({ log, sendPush = () => {}, langOf = () => 'en' }) {
+  // Never awaited: a push service that is slow or down does not hold up the request. `langOf` may
+  // answer a promise (the pilot's product mode reads the member's language from PostgreSQL).
   const push = (uid, kind, names, body) => {
-    const p = trainerPush(langOf(uid), kind, names, body);
-    if (!p) return;
-    // Never awaited: a push service that is slow or down does not hold up the request.
-    try { Promise.resolve(sendPush(uid, p)).catch(e => console.error('trainer push', e.message)); } catch (e) { console.error('trainer push', e.message); }
+    Promise.resolve().then(() => langOf(uid)).then(lang => {
+      const p = trainerPush(lang, kind, names, body);
+      return p && sendPush(uid, p);
+    }).catch(e => console.error('trainer push', e.message));
   };
   return {
     push,
