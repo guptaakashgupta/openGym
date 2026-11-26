@@ -9,9 +9,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootProduct } from '../storage/product-server.mjs';
-import { createGym } from '../../platform/organisations.js';
-import { addMembership } from '../../platform/memberships.js';
-import { assignTrainer } from '../../platform/assignments.js';
 
 const DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '../fixtures/pilot-clients');
 const fixtures = fs.readdirSync(DIR).filter(f => f.endsWith('.json')).sort();
@@ -25,18 +22,12 @@ for (const file of fixtures) {
   test(`client ${fx.client}: every request it makes still gets what it reads`, async t => {
     const h = await bootProduct(t);
     const now = new Date().toISOString();
-    for (const id of ['owner', 'trainer', 'member']) await h.store.createUser({ id, name: 'Name ' + id, created: now });
-    const gym = await createGym(h.pool, { name: 'Compat Gym' });
-    await addMembership(h.pool, { gymId: gym.id, userId: 'owner', role: 'owner' });
-    const tr = await addMembership(h.pool, { gymId: gym.id, userId: 'trainer', role: 'trainer' });
-    const mem = await addMembership(h.pool, { gymId: gym.id, userId: 'member', role: 'member' });
-    await assignTrainer(h.pool, { gymId: gym.id, memberMembershipId: mem.id, trainerMembershipId: tr.id });
-    const fill = v => JSON.parse(JSON.stringify(v ?? null).replaceAll('{memberMembershipId}', mem.id));
+    await h.store.createUser({ id: 'member', name: 'Name member', created: now });
 
     let n = 0;
     for (const r of fx.requests) {
       const where = `${fx.client} #${++n} ${r.method} ${r.path}`;
-      const res = await h.req(r.method, fill(r.path), { cookie: h.session(r.as), body: r.body === undefined ? undefined : fill(r.body), ip: `198.18.0.${n}` });
+      const res = await h.req(r.method, r.path, { cookie: h.session(r.as), body: r.body, ip: `198.18.0.${n}` });
       assert.equal(res.status, r.status, `${where}: ${JSON.stringify(res.body)}`);
       for (const k of r.keys || []) assert.ok(res.body && k in res.body, `${where}: no "${k}" in ${JSON.stringify(Object.keys(res.body || {}))}`);
       for (const [list, keys] of Object.entries(r.itemKeys || {})) {

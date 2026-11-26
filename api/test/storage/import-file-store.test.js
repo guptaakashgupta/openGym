@@ -73,7 +73,6 @@ test('apply needs the maintenance window, then preserves accounts, credentials a
     assert.equal(Number(row.revision), doc._rev);
     assert.equal(row.write_id, doc._wid);
   }
-  for (const table of ['workout_visibility', 'recording_events', 'seen_workout_ids', 'gym_memberships']) assert.equal(await count(pool, table), 0, table);
 
   const again = await importFileStore({ source: dir, pool, apply: true, maintenanceWindow: true });
   assert.equal(again.status, 'already-imported');

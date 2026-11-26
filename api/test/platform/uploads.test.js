@@ -14,7 +14,6 @@ import { postgresIdentityStore } from '../../storage/identity-postgres.js';
 import { fsObjects } from '../../storage/objects.js';
 import { createProductMedia } from '../../platform/uploads.js';
 import { mediaLimits, MediaError } from '../../media.js';
-import { projectWorkouts } from '../../platform/workout-projection.js';
 import * as M from '../media-samples.mjs';
 
 // Ids long enough that a random key containing one by chance is not a real risk.
@@ -133,14 +132,6 @@ test('an unreferenced upload goes after its grace; a referenced one stays', asyn
   assert.ok(await w.media.open(A, M.sha(kept)));
   assert.equal(await w.media.open(A, M.sha(gone)), null);
   assert.equal(listObjects(w.objectsDir).length, 1);
-});
-
-test('a photo referenced by a visible workout never reaches the trainer projection', () => {
-  const hash = M.sha(M.jpeg(10));
-  const doc = { workouts: [{ id: 'w1', d: '2026-10-01', media: [{ hash, kind: 'image', mime: 'image/jpeg' }], entries: [{ id: 'squat', sets: [{ w: 100, r: 5, done: true }] }] }] };
-  const out = JSON.stringify(projectWorkouts(doc, new Set(['w1'])));
-  assert.ok(out.includes('w1'));
-  assert.ok(!out.includes(hash));
 });
 
 test('over HTTP: uploads need the object store, reads are per account, another account gets 404', async t => {

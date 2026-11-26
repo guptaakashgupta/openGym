@@ -68,9 +68,7 @@ export function postgresStateStore(pool) {
       return rows[0] ? { rev: revisionOf(rows[0].revision), reminder: rows[0].reminder, consent: rows[0].consent } : null;
     },
 
-    // `within(client, result)`, when given, runs after the document is stored and before the
-    // commit, in the same transaction (platform/workout-visibility.js).
-    async updateMemberState(uid, work, within) {
+    async updateMemberState(uid, work) {
       return transaction(pool, async client => {
         const user = await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [uid]);
         if (!user.rows[0]) throw new UnknownMemberError(uid);
@@ -78,7 +76,6 @@ export function postgresStateStore(pool) {
         const result = await work(rows[0]?.document ?? null);
         if (typeof result?.text !== 'string') return result;
         await storeMemberState(client, uid, result);
-        if (within) await within(client, result);
         return result;
       });
     },

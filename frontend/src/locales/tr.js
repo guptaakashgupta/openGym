@@ -1321,7 +1321,6 @@ export default {
   // Gym check-in (mobile-only)
   'Check in': 'Giriş yap',
   'At the gym': 'Salonda',
-  'Gym': 'Spor salonu',
   'Show this at the gym': 'Bunu salonda göster',
   'Add your gym card': 'Salon kartını ekle',
   'Add a card': 'Kart ekle',

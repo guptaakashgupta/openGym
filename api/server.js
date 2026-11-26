@@ -40,10 +40,6 @@ import { atomicWrite as durableWrite } from './durable.js';
 import { loadConfig } from './platform/config.js';
 import { createStateStore, createIdentityStore, createTransientStore, createSubscriptionStore } from './storage/index.js';
 import { postgresAuditSink } from './storage/audit-postgres.js';
-import { platformRoutes } from './platform/routes.js';
-import { previewInvitation, redeemInvitation } from './platform/invitations.js';
-import { recordingsProblem, recordWorkouts } from './platform/workout-visibility.js';
-import { errorAnswer } from './platform/errors.js';
 import { IdentityConflictError } from './storage/identity.js';
 import { StateUnreadableError } from './storage/state-file.js';
 import { StateUnsupportedError } from './storage/state-postgres.js';
@@ -1510,7 +1506,6 @@ const passwordRoutes = {
       return e.field === 'email' ? emailRefused() : nameRefused();
     }
     if (inv) { inv.usedBy = user.id; inv.usedAt = created; saveDb(); }
-    await joinAfterSignup(req, user, gymInvite);
     audit(req, 'auth.register.ok', { user, msg: inv ? inv.code + ' · password' : 'password' });
     json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': sessionCookie(user) });
   },
@@ -2192,7 +2187,7 @@ const routes = {
     // were not signed in when you asked", and would re-ask on every sign-in on every instance
     // that has no Coach. The key's absence is that answer.
     json(res, 200, {
-      // Product mode: signup needs a gym invitation unless the operator opened it (PILOT_OPEN_SIGNUP).
+      // Product mode: signup needs a code unless the operator opened it (PILOT_OPEN_SIGNUP).
       invite_only: INVITE_ONLY || (CONFIG.mode === 'product' && !PILOT_OPEN_SIGNUP), allow_guest: ALLOW_GUEST,
       // Only when on, so an instance without passwords answers exactly as it did before (#118).
       ...(PASSWORD_LOGIN ? { password_login: true } : {}),
@@ -2305,7 +2300,6 @@ const routes = {
       throw e;
     }
     if (invite) { invite.usedBy = user.id; invite.usedAt = user.created; saveDb(); }
-    await joinAfterSignup(req, user, c.gymInvite);
     audit(req, 'auth.register.ok', { user, msg: invite ? invite.code : null });
     json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': sessionCookie(user) });
   },
@@ -2532,20 +2526,12 @@ const routes = {
     // document is read, as they always did.
     const invalid = validateWrite(body);
     if (invalid) return json(res, invalid.status, invalid.body);
-    // Product mode: new recordings the device reports beside the document, decided in the same
-    // transaction as the write (platform/workout-visibility.js). File mode has no gyms.
-    const recordingsBad = CONFIG.mode === 'product' && recordingsProblem(body.platformRecordings);
-    if (recordingsBad) return json(res, 400, { error: recordingsBad, code: 'bad-recordings' });
-    const visibility = CONFIG.mode === 'product' ? async (client, written) => {
-      const results = await recordWorkouts(client, { userId: user.id, state: written.state, events: body.platformRecordings || [] });
-      if (body.platformRecordings) written.body.platformRecordings = results;
-    } : undefined;
     // The compare-and-write runs under the store's per-profile write serialisation, and the
     // answer goes out only once the store has persisted the document.
     let prepared;
     try {
       prepared = await STATE.updateMemberState(user.id, cur =>
-        prepareWrite(cur, body, { nextWriteId: () => crypto.randomBytes(8).toString('hex') }), visibility);
+        prepareWrite(cur, body, { nextWriteId: () => crypto.randomBytes(8).toString('hex') }));
     } catch (e) {
       // Text the database cannot hold (PostgreSQL JSONB refuses an embedded NUL): refused rather
       // than silently altered, and nothing stored.
@@ -2942,35 +2928,21 @@ const APP_ORIGINS = new Set(['https://localhost', 'capacitor://localhost', 'http
 
 // The operator keeps the one-time password reset (account recovery); the rest of the instance-wide
 // dashboard, the Coach and per-profile uploads are file-mode features.
-// Gym routes (platform/routes.js): product mode only; their own table, this dispatcher.
-const PLATFORM = CONFIG.mode === 'product' ? platformRoutes({ db: POOL, json, readBody, readSession, audit }) : null;
-// Product mode has no global signup: a new account needs a gym invitation (platform/invitations.js),
-// which the signup redeems. PILOT_OPEN_SIGNUP=1 is the operator's bootstrap switch, off by default.
+// Product mode has no global signup. PILOT_OPEN_SIGNUP=1 is the operator's bootstrap switch, off
+// by default. A trainer's or gym's code as the way in comes with upstream's trainers
+// (docs/plans/2026-11-26-adopt-upstream-trainers.md section 3); until then nothing else opens it.
 const PILOT_OPEN_SIGNUP = /^(1|true|yes|on)$/i.test(process.env.PILOT_OPEN_SIGNUP || '');
-// The invitation rides in `invite`, or in the sign-in screen's own invite-code field (`code`).
+// The code rides in `invite`, or in the sign-in screen's own invite-code field (`code`).
 const signupInvite = body => {
   const v = typeof body.invite === 'string' && body.invite ? body.invite : CONFIG.mode === 'product' && typeof body.code === 'string' ? body.code.trim() : '';
   return v.length <= 200 ? v : '';
 };
-// Null when this signup may go ahead; otherwise the refusal has been answered.
+// False when this signup may go ahead; otherwise the refusal has been answered.
 async function refuseSignup(req, res, invite) {
-  if (CONFIG.mode !== 'product' || (!invite && PILOT_OPEN_SIGNUP)) return false;
-  if (!invite) { json(res, 403, { error: 'joining needs an invitation from your gym', code: 'invite' }); return true; }
-  try { await previewInvitation(POOL, invite); return false; }
-  catch (e) {
-    if (!errorAnswer(e)) throw e;
-    audit(req, 'auth.register.denied', { ok: false, msg: 'invite-rejected' });
-    json(res, 403, { error: 'that invitation can no longer be used', code: 'invite' });
-    return true;
-  }
-}
-// After the account exists: the join. A token taken by someone else in the moment between the
-// check and here leaves an account without a gym, which a fresh invitation fixes.
-// ponytail: two transactions; one would need the identity store to share the client.
-async function joinAfterSignup(req, user, invite) {
-  if (CONFIG.mode !== 'product' || !invite) return;
-  try { await redeemInvitation(POOL, { token: invite, userId: user.id }); }
-  catch (e) { if (!errorAnswer(e)) throw e; audit(req, 'gym.invite.redeem', { ok: false, user, msg: e.code }); }
+  if (CONFIG.mode !== 'product' || PILOT_OPEN_SIGNUP) return false;
+  audit(req, 'auth.register.denied', { ok: false, msg: invite ? 'invite-rejected' : 'invite-missing' });
+  json(res, 403, { error: 'joining needs a code from your gym or trainer', code: 'invite' });
+  return true;
 }
 const productUnavailable = key => {
   const path = key.slice(key.indexOf(' ') + 1);
@@ -3018,14 +2990,11 @@ const server = http.createServer(async (req, res) => {
   // above stays a plain lookup, and so csrfOk and the catch-all see one name for every file.
   const mm = /^\/api\/media\/([0-9a-f]{64})$/.exec(url.pathname);
   if (mm) { key = req.method + ' /api/media/{hash}'; req.mediaHash = mm[1]; }
-  // Gym routes carry ids in their paths; csrfOk and the catch-all see their template key.
-  const gymRoute = PLATFORM && url.pathname.startsWith('/api/platform/') ? PLATFORM.match(req.method, url.pathname) : null;
-  if (gymRoute) key = gymRoute.key;
   // Upstream surfaces the shared pilot does not offer (docs/dev/PILOT_ENDPOINT_MATRIX.md): an
   // intentional answer before any handler, session or origin check runs, whether or not the
   // route is registered in this configuration.
   if (CONFIG.mode === 'product' && productUnavailable(key)) return json(res, 404, { error: 'not available on this service', code: 'unavailable' });
-  const handler = gymRoute ? (rq, rs) => PLATFORM.handle(rq, rs, gymRoute) : routes[key];
+  const handler = routes[key];
   if (!handler) return json(res, 404, { error: 'not found' });
   // The origin check may read an account (a Bearer has to verify), so an unavailable store is a
   // 503 here, never an unhandled rejection and never a pass.

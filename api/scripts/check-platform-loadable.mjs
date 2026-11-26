@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-/* Do the product's modules — api/platform, api/storage, api/state, api/shared — load under plain
- * node? api/shared is imported by the frontend under Vite as well, and Vite forgives what node
- * does not (see check-core-loadable.mjs for the incident that made that check). Importing a
- * module only defines things: none of these opens a connection or a file at import time. Run by
- * bare `node` on purpose — being outside the test runners IS the check. */
+/* Do the product's modules — api/platform, api/storage, api/state — load under plain node?
+ * The test runners resolve imports more forgivingly (see check-core-loadable.mjs for the
+ * incident that made that check). Importing a module only defines things: none of these opens a
+ * connection or a file at import time. Run by bare `node` on purpose — being outside the test
+ * runners IS the check. */
 import { readdirSync } from 'node:fs';
 
-const DIRS = ['platform', 'storage', 'state', 'shared'];
+const DIRS = ['platform', 'storage', 'state'];
 let failed = 0, loaded = 0;
 for (const dir of DIRS) {
   const base = new URL(`../${dir}/`, import.meta.url);

@@ -19,8 +19,6 @@ COPY frontend/package.json frontend/package-lock.json* ./
 # timed out on the shared runners — a lockfile-ignoring `npm install` fallback is no answer to that.
 RUN npm ci --ignore-scripts
 COPY api/coach/core/ /app/api/coach/core/
-# Plan import rules shared with the API (api/shared/plan-import.js), imported by lib/plan-share.js.
-COPY api/shared/ /app/api/shared/
 COPY frontend/ ./
 COPY deploy/pilot/ /app/deploy/pilot/
 # The exercise stills and animations, 180 px, licensed from Gym visual for openGym only: see

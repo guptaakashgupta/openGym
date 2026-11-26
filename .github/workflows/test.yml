@@ -113,8 +113,7 @@ jobs:
       - run: npm ci
       - run: node scripts/build-api-docs.mjs --check
       - run: node api/scripts/check-core-loadable.mjs
-      # The product modules (platform, storage, state, shared) under plain node: api/shared is
-      # imported by the frontend under Vite as well.
+      # The product modules (platform, storage, state) under plain node.
       - run: node api/scripts/check-platform-loadable.mjs
 
   # Builds *and runs* both image targets. Building alone would not have caught the api image

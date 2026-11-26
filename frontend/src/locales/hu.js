@@ -971,7 +971,6 @@ export default {
   // Gym check-in (mobile-only)
   'Check in': 'Bejelentkezés',
   'At the gym': 'A teremben',
-  'Gym': 'Edzőterem',
   'Show this at the gym': 'Mutasd fel a teremben',
   'Add your gym card': 'Add hozzá a terembérleted',
   'Add a card': 'Kártya hozzáadása',

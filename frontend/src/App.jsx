@@ -57,12 +57,10 @@ import CoachChat from './views/CoachChat.jsx'
 import Measurements from './views/Measurements.jsx'
 import CoachIntake from './views/CoachIntake.jsx'
 import CoachSetup from './views/CoachSetup.jsx'
-// The gym pilot's screens (product build only): one place they join the app.
+// The gym pilot's product build (VITE_PILOT=1): its own phone onboarding and no /admin.
 import { PRODUCT } from './platform/config.js'
 // The phone's first screen: the product build pairs with its one built-in service.
 const MobileOnboarding = PRODUCT ? PilotOnboarding : UpstreamOnboarding
-import { gymRoutes } from './platform/Routes.jsx'
-import { startGymRoleRefresh } from './platform/useGym.js'
 
 // last known scrollY per route, so back-navigation can put the page where it was
 const scrollPositions = new Map()
@@ -275,7 +273,6 @@ function Shell() {
       <Route path="/coach/proposal" element={<Navigate to="/coach" replace />} />
       <Route path="/coach/setup" element={<CoachSetup />} />
       <Route path="/admin" element={user?.admin && !PRODUCT ? <Admin /> : <Navigate to="/home" replace />} />
-      {PRODUCT && gymRoutes()}
       <Route path="*" element={<Navigate to="/home" replace />} />
     </Routes>
   ))
@@ -335,7 +332,6 @@ function Page({ loc, render, under = false, scrollY = 0 }) {
 export default function App() {
   const boot = useStore(s => s.boot)
   useEffect(() => { boot() }, [boot])
-  useEffect(() => { if (PRODUCT) return startGymRoleRefresh() }, [])
   // Android system back — sheet, then page, then press-again-to-exit (see lib/back.js)
   useEffect(() => {
     let stop = null, gone = false

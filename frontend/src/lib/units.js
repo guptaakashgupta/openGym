@@ -7,10 +7,14 @@ import { workoutVolume } from './history.js'
 import { EXIDX } from './exercises.js'
 import { defaultBarWeight, barTypeWeight } from './bar.js'
 
-// convertWeight and LB_PER_KG: api/shared/plan-rules.js (shared with the API's plan import).
-import { LB_PER_KG, convertWeight } from '../../../api/shared/plan-rules.js'
-export { convertWeight }
+const LB_PER_KG = 2.2046226218
 
+export function convertWeight(value, from, to) {
+  if (from === to || value == null || value === '' || !Number.isFinite(Number(value))) return value
+  const v = Number(value)
+  if (to === 'lb') return Math.round(v * LB_PER_KG * 2) / 2
+  return Math.round(v / LB_PER_KG * 4) / 4
+}
 
 // Body weight is not loaded on a bar: the weigh-in sheet steps and stores it at 0.1, so plate
 // rounding would move most weigh-ins on a kg → lb → kg round trip (78.6 → 173.5 → 78.75; QA C15).

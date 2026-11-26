@@ -1321,7 +1321,6 @@ export default {
   // Gym check-in (mobile-only)
   'Check in': 'चेक इन',
   'At the gym': 'जिम में',
-  'Gym': 'जिम',
   'Show this at the gym': 'इसे जिम में दिखाएँ',
   'Add your gym card': 'अपना जिम कार्ड जोड़ें',
   'Add a card': 'कार्ड जोड़ें',

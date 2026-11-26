@@ -2,9 +2,7 @@
 // (`sgName`, `sgRest` on a routine exercise, so on an entry's `target` once a session starts):
 // a reorder, a member taken out or the routine copied into a session keeps them without a second
 // structure to keep in step. The first member that has a value speaks for the group.
-// SG_NAME_MAX: api/shared/plan-rules.js (shared with the API's plan import).
-import { SG_NAME_MAX } from '../../../api/shared/plan-rules.js'
-export { SG_NAME_MAX }
+export const SG_NAME_MAX = 40
 
 const fieldsOf = (item, onTarget) => (onTarget ? item?.target : item) || {}
 
