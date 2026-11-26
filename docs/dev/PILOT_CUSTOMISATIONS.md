@@ -1,31 +1,57 @@
 # Pilot customisation map
 
-Every upstream file the gym pilot changes, why, which pilot module owns the change, and the
-tests that protect upstream behaviour there. Design: `docs/plans/2026-10-25-gym-pilot-design.md`;
-plan: `docs/plans/2026-10-25-gym-pilot-implementation.md`. Update this table in the same commit
-that first touches a new upstream file.
+Every upstream file the gym pilot changes, why, which pilot module owns the change, and the tests
+that protect upstream behaviour there. Since 26 Nov 2026 the pilot runs upstream's trainer system
+(`api/trainers/*`, docs/TRAINERS.md) on its PostgreSQL storage instead of its own gym module:
+`docs/plans/2026-11-26-adopt-upstream-trainers.md`. The storage, product build and deployment
+parts still follow `docs/plans/2026-10-25-gym-pilot-design.md` sections 1–3 and 7 onward.
 
-Status column: **planned** = named by the plan, not yet modified; **modified** = changed on
-`pilot/gym-platform`.
+Taken against the `main` merged in `dc56b5db0` with `git diff --diff-filter=M dc56b5db0^2 HEAD`.
+Files only the pilot adds (`api/storage/`, `api/state/`, `api/platform/`, `api/migrations/`,
+`deploy/pilot/`, `render.yaml`, `frontend/src/platform/`, the pilot scripts and tests) are not
+listed. Update this table in the same commit that first touches a new upstream file.
 
-| Upstream file | Reason | Owner module | Protecting tests | Status |
-| --- | --- | --- | --- | --- |
-| `api/server.js` | Storage extraction (state, identity, transient auth), product route dispatch, closing legacy admin/coach/share paths in product mode | `api/storage/`, `api/state/`, `api/platform/` | `api/test/storage/state-contract.test.js`, `api/test/server-data-*.test.js`, `sync-stamps.test.js`, `server-state-cache-bounds`, `server-password`, `server-passkeys`, `server-pairing`, `server-token-refresh`, `server-csrf-bearer`, `server-login-csrf`, `server-account-delete`, `server-admin-*` | modified (T3 write rules → `api/state/prepare-write.js`; T4 state store; T5 PG pool; T6–T7 sessions and account/password/e-mail/passkey/delete routes through `IDENTITY`, async `readSession`, id+sv checks instead of object identity) |
-| `api/media.js` | Upload validation after streaming extracted as `verifyUpload`; `streamToFile`, `drain`, `contentType`, `contentLength`, `capMB` exported, so the product store reuses the same rules | `api/platform/uploads.js` | `api/test/media-*.test.js`, `server-media.test.js`, `api/test/platform/uploads.test.js` | modified (T22) |
-| `.gitignore` | Ignores the pilot's generated outputs (`frontend/dist-pilot/`, `frontend/android/pilot.properties`) and per-environment deployment copies (`deploy/pilot/.env`, `Caddyfile`, `secrets.env`) | `frontend/scripts/build-pilot.mjs`, `deploy/pilot/` | — | modified (T24, T26) |
-| `.github/workflows/test.yml` | Pushes to `pilot/**` and `integration/**` run the upstream checks; `check-platform-loadable.mjs` beside `check-core-loadable.mjs` | `.github/workflows/pilot-test.yml` | the workflow itself | modified (T25) |
-| `.github/workflows/docker-publish.yml`, `pages.yml`, `ios.yml` | Publishing, deploying and signing jobs run only from upstream refs (`main`, `v*` tags, `stores`), never from a pilot branch's manual run | `docs/dev/PILOT_COMPATIBILITY.md` | the workflows themselves | modified (T25) |
-| `api/Dockerfile` | Copy new `state/`, `storage/`, `platform/`, `shared/`, `migrations/` into the image | `api/` build | CI image build + boot (`.github/workflows/test.yml` api-image job) | modified (T3–T5: `COPY state`, `storage`, `platform`, `migrations`, `scripts/migrate.mjs`; T23 importer; T25 `org.opengym.pilot.*` labels) |
-| `api/test/server-state-read-cost.test.js` | Source-inspection assertions re-pointed from inline readers to the member-state store seam; behaviour assertions unchanged | `api/storage/state-file.js` | itself, `api/test/storage/file-state.test.js` | modified (T4, T9: push routes read via `reminderState`) |
-| `frontend/src/App.jsx` | One product route entry point (`{PRODUCT && gymRoutes()}`); `/admin` closed in the product build; product mobile onboarding gate (T21) | `frontend/src/platform/Routes.jsx`, `MobileOnboarding.jsx` | `frontend/src/App.*.test.jsx`, `frontend/src/platform/context.test.jsx`, `mobile-onboarding.test.jsx` | modified (T17, T21) |
-| `frontend/src/views/Settings.jsx` | Product build: a Gym row instead of the instance Admin dashboard row | `frontend/src/platform/config.js` | full frontend suite | modified (T17) |
-| `frontend/src/views/Login.jsx` | Product build: invite field prefilled from a gym join link and kept case-sensitive (gym tokens are base64url) | `frontend/src/platform/join-token.js` | full frontend suite | modified (T19) |
-| `frontend/src/store/useStore.js` | Product build: `doPush` attaches staged `platformRecordings` to the personal-state PUT and settles them only from a stored write's answer; `deleteAccount` forgets the account's outbox. Plan acceptance needed no store change (T19 ruling) | `frontend/src/platform/workout-context.js`, `workout-outbox.js` | `frontend/src/platform/workout-wiring.test.jsx`, `frontend/src/store/useStore.*.test.jsx` | modified (T20) |
-| `frontend/src/sheets.jsx` | Product build: a live recording (`beginWorkout`, `repeatWorkout`) captures the known gym membership; finishing it (not a backfill or an edit) stages its visibility event before the sync is scheduled | `frontend/src/platform/workout-context.js` | `frontend/src/platform/workout-wiring.test.jsx`, `frontend/src/sheets.*.test.jsx` | modified (T20) |
-| `frontend/src/lib/plan-share.js` | Build/parse/merge moved to runtime-neutral `api/shared/plan-import.js` (factory with injected catalogue/t/ids); printing stays; public exports unchanged; `mergePlan` gains `ids` and returns routine/custom maps | `api/shared/plan-import.js` | `frontend/src/lib/plan-share.test.js`, `frontend/src/platform/plan-import.test.js`, `api/test/platform/plan-import.test.js` (same contract) | modified (T14) |
-| `frontend/src/lib/{pyramid,backoff,dumbbells,units,routine-backups,media-refs,muscles,superset-meta,history,progression}.js` | Pure helpers plan import needs moved verbatim to `api/shared/plan-rules.js`; each module re-exports them, so importers are unchanged (`modeOf` now calls `modeOfWith(cfg, isCardio)`) | `api/shared/plan-rules.js` | full frontend suite | modified (T14) |
-| `web/Dockerfile` | Copy `api/shared` into the web build context; `PILOT_PRODUCT` build arg builds the product (build-pilot.mjs); exercise media copied only into the build stage and moved into `dist/` by the upstream build alone | `frontend/scripts/build-pilot.mjs` | CI web build | modified (T14, T24) |
-| `frontend/android/app/build.gradle`, `settings.gradle`, `src/main/AndroidManifest.xml` | Product `applicationId` and launcher label from the generated, ignored `android/pilot.properties` (manifest placeholders `appLabel`, `activityLabel`); Play asset packs never applied with it. Without the file: upstream, unchanged. iOS, `capacitor.config.json` and `strings.xml` untouched (iOS excluded from the pilot) | `frontend/scripts/build-pilot.mjs`, `check-pilot-bundle.mjs` | `frontend/scripts/check-pilot-bundle.test.mjs`; physical-device checklist (Task 27) | modified (T24) |
-| `frontend/package.json` | `build:pilot`, `build:mobile:pilot`; `build:mobile` removes a leftover `android/pilot.properties` first | `frontend/scripts/build-pilot.mjs` | `frontend/scripts/check-pilot-bundle.test.mjs` | modified (T24) |
-| `frontend/src/lib/update.js`, `frontend/src/views/Settings.jsx` (about) | Product build: no upstream release check, no upstream APK download row (their URLs leave the bundle) | `frontend/src/platform/config.js` | `check-pilot-bundle.test.mjs` (real build), full frontend suite | modified (T24) |
-| `scripts/catalogue/stage-media.mjs` | `--manifest`: stage exactly a licensed manifest's files, hash-verified | `frontend/scripts/build-pilot.mjs` | `check-pilot-bundle.test.mjs` | modified (T24) |
+## Pilot rules on top of upstream trainers
+
+| Rule | Where | Tests |
+| --- | --- | --- |
+| A trainer gives the member a code; the member connects and consents. No admin assigns members | upstream as is | upstream trainer suites |
+| Trainers may see the member's whole history, at the levels the member chose | upstream as is | upstream trainer suites |
+| One active gym per member: `409 other-gym` from `joinGym` and from `connect` with a gym trainer's code; private trainers unaffected; OIDC claims for a second gym skipped | `api/trainers/org-store.js` (`otherGym`, `oneGym`) | `api/test/one-gym.test.js` |
+| Sign-up only with a live `TR-`/`GY-` code whose owner may still invite; checked, not spent; then the connect screen | `api/server.js` (`signupCodeLive`, `refuseSignup`), `frontend/src/platform/signup-code.js` | `api/test/platform/trainers.test.js`, `frontend/src/platform/signup-code.test.js` |
+| Gym leads see member names only (`TRAINERS_LEAD_ACCESS=none`) | `render.yaml`, `deploy/pilot/compose.yml` | deploy config |
+| The operator (`ADMIN_UIDS`) runs gyms, staff and free trainers; every other admin route stays closed | `api/server.js` (`PRODUCT_ADMIN`), `frontend/src/views/Admin.jsx` (`ProductAdmin`) | `api/test/platform/trainers.test.js`, `legacy-surface.test.js` |
+
+## Upstream files the pilot changes
+
+| Upstream file | Reason | Owner module | Protecting tests |
+| --- | --- | --- | --- |
+| `api/server.js` | Storage seam (state, identity, subscriptions, transient auth in PostgreSQL), async `readSession`/`requireAdmin`; product route gate (`productUnavailable`, `PRODUCT_CLOSED`, `PRODUCT_ADMIN`); trainers on the seam (`accountById`, `withUsers`, `trainerState`, `writeStateAs`/`commitState` through `STATE.updateMemberState`); sign-up with a trainer or gym code; slim product `GET /api/admin/users` | `api/storage/`, `api/state/`, `api/platform/` | `api/test/storage/*`, `api/test/platform/*`, `server-session-required.test.js`, upstream `server-*` suites |
+| `api/trainers/routes.js`, `api/coach/routes.js`, `api/library/routes.js`, `api/library/moderation.js`, `api/integrations/routes.js`, `api/oidc/routes.js` | `await` on the now-async `readSession`/`requireAdmin`: an unawaited Promise is truthy and would pass every auth check | `api/server.js` | `server-session-required.test.js`, `test/platform/session-required.test.js` (routes from `openapi.yaml`) |
+| `api/trainers/dashboard-routes.js` | `state.read` awaited (8 places), `suggest` async, so member state can come from PostgreSQL | `api/storage/state-postgres.js` | upstream `server-trainer-dashboard`, `test/platform/trainers.test.js` |
+| `api/trainers/notify.js` | `langOf` async for the same reason | as above | upstream `trainer-ops`, `server-trainers` |
+| `api/trainers/org-store.js` | One gym per member (above) | — | `api/test/one-gym.test.js` |
+| `api/media.js` | Upload validation after streaming extracted as `verifyUpload`; `streamToFile`, `drain`, `contentType`, `contentLength`, `capMB` exported for the object store | `api/platform/uploads.js` | `api/test/media-*.test.js`, `server-media.test.js`, `test/platform/uploads.test.js` |
+| `api/package.json`, `api/package-lock.json` | `pg` (the one added dependency); `test:storage`, `test:platform`, `migrate` scripts | `api/storage/postgres.js` | CI |
+| `api/Dockerfile` | Copies `state/`, `storage/`, `platform/`, `migrations/`, `scripts/migrate.mjs`, the importer; `org.opengym.pilot.*` labels | `api/` build | CI image build and boot |
+| `api/test/server-state-read-cost.test.js` | Source-inspection assertions point at the member-state store seam; behaviour assertions unchanged | `api/storage/state-file.js` | itself, `test/storage/file-state.test.js` |
+| `api/test/server-push-prune-save.test.js` | Expects the subscription store's error message instead of db.json's | `api/storage/subscriptions-file.js` | itself |
+| `.gitignore` | Pilot build outputs and per-environment deploy copies | `frontend/scripts/build-pilot.mjs`, `deploy/pilot/` | — |
+| `.github/workflows/test.yml` | `pilot/**` and `integration/**` pushes run upstream checks; `check-platform-loadable.mjs` | `.github/workflows/pilot-test.yml` | the workflow |
+| `.github/workflows/docker-publish.yml`, `pages.yml`, `ios.yml` | Publishing, deploying and signing only from upstream refs, never a pilot branch | `docs/dev/PILOT_COMPATIBILITY.md` | the workflows |
+| `web/Dockerfile` | `PILOT_PRODUCT` build arg builds the product; media copied into the build stage only for the upstream build | `frontend/scripts/build-pilot.mjs` | CI web build |
+| `frontend/vite.config.js` | `dev:pilot` preview; the `pilotUpstream` rewrite drops upstream service addresses from the Coach core the app imports | `frontend/scripts/check-pilot-bundle.mjs` | `check-pilot-bundle.test.mjs`, `build:pilot` |
+| `frontend/package.json`, `package-lock.json` | `build:pilot`, `build:mobile:pilot`, `dev:pilot`; `build:mobile` removes a leftover `android/pilot.properties` | `frontend/scripts/build-pilot.mjs` | `check-pilot-bundle.test.mjs` |
+| `frontend/android/app/build.gradle`, `settings.gradle`, `src/main/AndroidManifest.xml` | Product `applicationId` and launcher label from the ignored `android/pilot.properties`; without it, upstream unchanged. iOS excluded | `frontend/scripts/build-pilot.mjs` | `check-pilot-bundle.test.mjs`; device checklist |
+| `frontend/src/App.jsx` | Product phone onboarding; `/admin` is the gyms and trainers page in the product build | `frontend/src/platform/MobileOnboarding.jsx`, `views/Admin.jsx` | `mobile-onboarding.test.jsx`, `App.*.test.jsx` |
+| `frontend/src/views/Admin.jsx` | `ProductAdmin`: upstream's gyms card and a free-trainer list, nothing else | `frontend/src/platform/config.js` | `test/platform/trainers.test.js` (server closes the rest) |
+| `frontend/src/views/Settings.jsx` | Admin row only with trainers on in the product build; no upstream updater or APK row | `frontend/src/platform/config.js` | full frontend suite |
+| `frontend/src/views/Login.jsx`, `frontend/src/components/PasswordAuth.jsx` | Sign-up code pre-filled from a trainer's QR link; the connect screen opens after sign-up | `frontend/src/platform/signup-code.js` | `signup-code.test.js` |
+| `frontend/src/views/Home.jsx`, `AdminCoach.jsx`, `frontend/src/lib/gym-places.js`, `routine-link.js`, `update.js` | Product name instead of openGym; no upstream address in the bundle (OSM user agent, routine links on the pilot's own origin, no release check) | `frontend/src/platform/config.js` | `check-pilot-bundle.test.mjs`, full frontend suite |
+| `scripts/catalogue/stage-media.mjs` | `--manifest`: stage exactly a licensed manifest's files, hash-verified | `frontend/scripts/build-pilot.mjs` | `check-pilot-bundle.test.mjs` |
+
+Removed on 26 Nov 2026 (`7c116db91`), back to upstream: `frontend/src/store/useStore.js`,
+`sheets.jsx`, `lib/plan-share.js` and the ten plan-rule helpers in `frontend/src/lib/`, together
+with the pilot's gym module (`api/platform/` gyms, memberships, assignments, invitations,
+proposals, workout visibility; migrations 005–009; `api/shared/`; `frontend/src/platform/` gym
+screens and `join-token.js`).

@@ -18,11 +18,11 @@ production refuses a `DATABASE_URL` without `sslmode=verify-full` or `verify-ca`
 
 `api/test/fixtures/pilot-clients/` holds one fixture per supported client build:
 
-- `current.json`: the current pilot client. Personal sync with `platformRecordings` and fields the
-  server does not know, gym context, the trainer's client list and progress, plans, the revision
-  check before accepting a plan, and export.
-- `previous.json`: the previous supported pilot client. Personal sync without recordings (as an
-  upstream client syncs), gym context and plans.
+- `current.json`: the current pilot client. Personal sync (`PUT`/`GET /api/data`) and the revision
+  check (`GET /api/data/rev`). Trainers and sharing are upstream's routes, covered by upstream's
+  suites and `test/platform/trainers.test.js`.
+- `previous.json`: the previous supported pilot client. Personal sync, as an upstream client syncs.
+  The pilot gym module's calls (gym context, plans, recordings) went with it on 26 Nov 2026.
 
 `api/test/platform/client-compat.test.js` replays each fixture against a product server and
 fails when a status changes, a field the client reads disappears, or state fields the server does

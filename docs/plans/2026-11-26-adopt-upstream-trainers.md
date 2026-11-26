@@ -153,6 +153,7 @@ Tests:
 ## 7. Open items
 
 - Whether the migration runner needs contiguous numbers (affects renumbering 010–011).
-- The exact admin route list behind the Trainer & gym admin page, read from the merged code.
+- Resolved (step 4, `f74955be5`): the admin route list is `GET /api/admin/gyms`, `POST /api/admin/gyms/{new,update,staff}`,
+  `POST /api/admin/user/trainer` and a slim `GET /api/admin/users` (docs/dev/PILOT_ENDPOINT_MATRIX.md).
 - Whether upstream would take the two small patches in section 2 (awaited state reads, async
   `langOf`).

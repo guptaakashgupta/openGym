@@ -1,5 +1,7 @@
 # Shared Gym Pilot Implementation Plan
 
+> Status 26 Nov 2026: the gym, membership, assignment, invitation, proposal and visibility parts are replaced by upstream's trainers (`2026-11-26-adopt-upstream-trainers.md`). Storage, product build, uploads, deployment and operations still stand.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Launch the approved gym pilot on shared infrastructure with scoped trainer access, member-accepted plans, Android/iOS pilot builds, and a maintainable relationship with upstream openGym.
@@ -164,6 +166,8 @@ Gym owners never receive platform password-reset authority. For the pilot, an op
 
 ## Task 10: Add Gym, Membership and Assignment Records
 
+> **Replaced 26 Nov 2026** by upstream's trainer system: see `2026-11-26-adopt-upstream-trainers.md`. The pilot's own gym module was removed in `7c116db91`; this section is kept as history.
+
 **Files:** Create `api/platform/organisations.js`, `api/platform/memberships.js`, `api/platform/assignments.js`, `api/migrations/005_gyms.sql`, `api/test/platform/memberships.test.js`; create `api/scripts/pilot-gym.mjs` for operator provisioning.
 
 1. Test one active member gym, two owners in different gyms, an owner also holding a trainer role, invalid cross-gym assignments, and simultaneous attempts to join two gyms.
@@ -186,6 +190,8 @@ Assignments reference both membership IDs and the gym. Use composite foreign key
 5. Commit: `Pilot: add gym memberships and scoped trainer assignments`.
 
 ## Task 11: Centralise Authorisation and Register Scoped Routes
+
+> **Replaced 26 Nov 2026** by upstream's trainer system: see `2026-11-26-adopt-upstream-trainers.md`. The pilot's own gym module was removed in `7c116db91`; this section is kept as history.
 
 **Files:** Create `api/platform/access.js`, `api/platform/routes.js`, `api/platform/errors.js`, `api/test/platform/access.test.js`, `api/test/platform/isolation-http.test.js`; modify `api/server.js`, `api/Dockerfile`.
 
@@ -212,6 +218,8 @@ Keep route dispatch separate from the existing map while reusing request parsing
 
 ## Task 12: Implement Single-Use Invitations
 
+> **Replaced 26 Nov 2026** by upstream's trainer system: see `2026-11-26-adopt-upstream-trainers.md`. The pilot's own gym module was removed in `7c116db91`; this section is kept as history.
+
 **Files:** Create `api/platform/invitations.js`, `api/migrations/006_invitations.sql`, `api/test/platform/invitations.test.js`; modify `api/platform/routes.js`, `api/platform/memberships.js`.
 
 1. Test expired, revoked, consumed and cross-gym invitations, two simultaneous redemptions, wrong intended recipient where bound, and an existing member attempting to join another gym.
@@ -221,6 +229,8 @@ Keep route dispatch separate from the existing map while reusing request parsing
 5. Commit: `Pilot: add transactional gym invitations`.
 
 ## Task 13: Record Workout Visibility and Return Restricted Projections
+
+> **Replaced 26 Nov 2026** by upstream's trainer system: see `2026-11-26-adopt-upstream-trainers.md`. The pilot's own gym module was removed in `7c116db91`; this section is kept as history.
 
 **Files:** Create `api/platform/workout-visibility.js`, `api/platform/workout-projection.js`, `api/migrations/007_workout_visibility.sql`, `api/test/platform/workout-visibility.test.js`, `api/test/platform/workout-projection.test.js`; modify product state-write integration in `api/server.js` and `api/platform/routes.js`.
 
@@ -236,6 +246,8 @@ Projection reads join current active assignment, current membership and visibili
 5. Commit: `Pilot: project only eligible assigned-member workouts`.
 
 ## Task 14: Extract a Shared, Deterministic Plan-Import Core
+
+> **Replaced 26 Nov 2026** by upstream's trainer system: see `2026-11-26-adopt-upstream-trainers.md`. The pilot's own gym module was removed in `7c116db91`; this section is kept as history.
 
 **Files:** Create `api/shared/plan-import.js`, `api/test/platform/plan-import.test.js`, `frontend/src/platform/plan-import.test.js`; modify `frontend/src/lib/plan-share.js`, `frontend/src/lib/plan-share.test.js`, `web/Dockerfile`, `api/Dockerfile`.
 
@@ -261,6 +273,8 @@ Do not copy a second progression engine or silently drop unsupported prescriptio
 
 ## Task 15: Persist Versioned Plan Proposals
 
+> **Replaced 26 Nov 2026** by upstream's trainer system: see `2026-11-26-adopt-upstream-trainers.md`. The pilot's own gym module was removed in `7c116db91`; this section is kept as history.
+
 **Files:** Create `api/platform/proposals.js`, `api/migrations/008_plan_proposals.sql`, `api/test/platform/proposals.test.js`; modify `api/platform/routes.js`.
 
 1. Test assigned-trainer creation, unauthorised creation, malformed/oversized plan bundles, immutable versions, member decline, superseded versions and reassignment while pending.
@@ -270,6 +284,8 @@ Do not copy a second progression engine or silently drop unsupported prescriptio
 5. Commit: `Pilot: add versioned trainer plan proposals`.
 
 ## Task 16: Make Acceptance Atomic, Idempotent and Conflict-Aware
+
+> **Replaced 26 Nov 2026** by upstream's trainer system: see `2026-11-26-adopt-upstream-trainers.md`. The pilot's own gym module was removed in `7c116db91`; this section is kept as history.
 
 **Files:** Create `api/platform/accept-proposal.js`, `api/test/platform/accept-proposal.test.js`; modify `api/platform/routes.js`, `api/shared/plan-import.js`; add `api/migrations/009_plan_acceptances.sql`.
 
@@ -284,6 +300,8 @@ The unique acceptance key is `(member_user_id, proposal_version_id)`. Retrying a
 
 ## Task 17: Add Product API Context and Route Entry Points
 
+> **Replaced 26 Nov 2026** by upstream's trainer system: see `2026-11-26-adopt-upstream-trainers.md`. The pilot's own gym module was removed in `7c116db91`; this section is kept as history.
+
 **Files:** Create `frontend/src/platform/config.js`, `frontend/src/platform/api.js`, `frontend/src/platform/useGym.js`, `frontend/src/platform/Routes.jsx`, `frontend/src/platform/context.test.jsx`; modify `frontend/src/App.jsx`, `frontend/src/views/Settings.jsx`.
 
 1. Test two accounts on the same browser, role changes on refresh, denied staff routes, and upstream mode without product configuration. Ensure gym roles are not read from `S` or persisted as authority.
@@ -293,6 +311,8 @@ The unique acceptance key is `(member_user_id, proposal_version_id)`. Retrying a
 5. Commit: `Pilot UI: add server-backed gym context and routes`.
 
 ## Task 18: Build Owner and Trainer Web Workflows
+
+> **Replaced 26 Nov 2026** by upstream's trainer system: see `2026-11-26-adopt-upstream-trainers.md`. The pilot's own gym module was removed in `7c116db91`; this section is kept as history.
 
 **Files:** Create `frontend/src/platform/Owner.jsx`, `frontend/src/platform/Trainer.jsx`, `frontend/src/platform/ClientProgress.jsx`, `frontend/src/platform/owner.test.jsx`, `frontend/src/platform/trainer.test.jsx`; modify `frontend/src/platform/Routes.jsx`, relevant `frontend/src/locales/` files.
 
@@ -304,6 +324,8 @@ The unique acceptance key is `(member_user_id, proposal_version_id)`. Retrying a
 
 ## Task 19: Add Member Invitation and Proposal Acceptance Screens
 
+> **Replaced 26 Nov 2026** by upstream's trainer system: see `2026-11-26-adopt-upstream-trainers.md`. The pilot's own gym module was removed in `7c116db91`; this section is kept as history.
+
 **Files:** Create `frontend/src/platform/JoinGym.jsx`, `frontend/src/platform/Proposals.jsx`, `frontend/src/platform/accept-plan.js`, `frontend/src/platform/member.test.jsx`; modify `frontend/src/platform/Routes.jsx`, `frontend/src/store/useStore.js`, relevant locales.
 
 1. Test auth-then-invite continuity, joining while already enrolled, proposal decline, explicit update preview, offline refusal, conflict retry and a response lost after successful acceptance.
@@ -313,6 +335,8 @@ The unique acceptance key is `(member_user_id, proposal_version_id)`. Retrying a
 5. Commit: `Pilot UI: join gyms and accept proposals safely`.
 
 ## Task 20: Persist Membership Context for Newly Recorded Workouts
+
+> **Replaced 26 Nov 2026** by upstream's trainer system: see `2026-11-26-adopt-upstream-trainers.md`. The pilot's own gym module was removed in `7c116db91`; this section is kept as history.
 
 **Files:** Create `frontend/src/platform/workout-context.js`, `frontend/src/platform/workout-outbox.js`, `frontend/src/platform/workout-context.test.js`; modify `frontend/src/sheets.jsx`, `frontend/src/store/useStore.js`, `frontend/src/lib/mobile.js` only for the necessary persistence hook.
 

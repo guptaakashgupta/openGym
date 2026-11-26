@@ -56,7 +56,7 @@ Configure these once a monitoring service is chosen (**Pending**):
 | Availability | `GET /api/health` from outside | 2 consecutive failures |
 | Database | `/api/health` answers but reports the database unavailable, or the provider's alert | any |
 | Failed sync | rate of `PUT /api/data` answering 5xx in the access log | above the agreed baseline |
-| Failed acceptance | `POST /api/platform/proposals/{id}/accept` answering 5xx | any |
+| Failed trainer change | `POST /api/trainer/assign` or `/api/sharing/connect` answering 5xx | any |
 | Backups | the last successful database and object backup older than the RPO | RPO |
 | Certificates | Caddy certificate renewal errors | any |
 

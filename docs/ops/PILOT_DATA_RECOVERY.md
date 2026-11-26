@@ -51,21 +51,16 @@ uploaded media (devices upload the files the server reports as missing).
 Passkeys keep working only if the product service uses the same relying-party identity
 (`RP_ID`, the exact hostname) as the file-mode instance. See "Passkeys and domains".
 
-## Member export (`GET /api/platform/export`)
+## Member export
 
-A signed-in member downloads their own data as JSON, format `opengym-pilot-export/1`:
+A signed-in member downloads their own data from the app (Settings, Data & backup), which reads
+their personal document (`GET /api/data`). What they share with trainers and gyms (connections,
+consent records and the sharing log) is in `GET /api/sharing/export` (upstream's trainers,
+docs/TRAINERS.md). The pilot's own `GET /api/platform/export` (`opengym-pilot-export/1`) went
+with the gym module on 26 Nov 2026.
 
-| Field | Content |
-| --- | --- |
-| `format`, `exportedAt` | Format version and time of export |
-| `account` | `id`, `name`, `email`, `created` of the caller |
-| `state` | The caller's personal document, as stored |
-| `memberships[]` | `membershipId`, `gymId`, `gymName`, `role`, `startedAt`, `endedAt` |
-| `proposals.received[]` | Plans sent to the caller: `id`, `gymId`, `status`, `previousVersionId`, `createdAt`, `decidedAt`, `bundle` |
-| `sharedWorkouts[]` | Which of the caller's workouts a gym may see: `workoutId`, `membershipId`, `grantedAt` |
-
-Never included: passwords, passkeys, session versions, tokens, other people's names, or any
-other account's documents. A trainer's export holds their own document, not their clients'.
+Never included: passwords, passkeys, session versions, tokens, or any other account's documents.
+A trainer's export holds their own document, not their members'.
 
 ## Account deletion
 

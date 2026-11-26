@@ -1,5 +1,7 @@
 # Gym Pilot Design: Shared Platform with Upstream Compatibility
 
+> Status 26 Nov 2026: the gym, membership, assignment, invitation, proposal and visibility parts are replaced by upstream's trainers (`2026-11-26-adopt-upstream-trainers.md`). Storage, product build, uploads, deployment and operations still stand.
+
 Date: 2026-10-25
 
 Status: Architecture, workflows, permissions, mobile onboarding, and upstream-update process approved in the planning conversation. Implementation is not started by this document.
@@ -76,6 +78,8 @@ Provide a repeatable migration from existing JSON storage, with validation and a
 
 ## 4. Workflows
 
+> **Replaced 26 Nov 2026** by upstream's trainer system: see `2026-11-26-adopt-upstream-trainers.md` and `docs/dev/PILOT_CUSTOMISATIONS.md` (pilot rules). The pilot's own gym module was removed in `7c116db91`; this section is kept as history.
+
 ### Platform operator
 
 Create the organisation, invite its owner, configure identity, and record the agreed pilot subscription. Handle invoices manually. Platform operation is separate from the upstream general administrator screen; any exceptional support access needs deliberate authorisation and an audit trail.
@@ -93,6 +97,8 @@ Use the existing routine editor to prepare a plan, then send a versioned proposa
 Authenticate, accept a gym invitation, review and accept or decline a proposal, then train using existing workout flows. Initial acceptance adds routines. Updates explicitly identify which previously accepted routines will change; never silently replace unrelated member-created routines or completed workouts. A member retains export access and their personal history after leaving.
 
 ## 5. Permissions and Privacy Boundaries
+
+> **Replaced 26 Nov 2026** by upstream's trainer system: see `2026-11-26-adopt-upstream-trainers.md` and `docs/dev/PILOT_CUSTOMISATIONS.md` (pilot rules). The pilot's own gym module was removed in `7c116db91`; this section is kept as history.
 
 All requests validate server-side identity, current membership, role, assignment, resource ownership, and organisation consistency. A client-provided gym identifier selects a context; it does not grant access.
 
@@ -113,6 +119,8 @@ Visibility is explicit and fail-closed. Workouts created during a membership car
 Reassignment revokes the old trainer's access. Ending membership revokes staff access to that membership's workouts; joining another gym does not reclassify them. Staff views require connectivity in the pilot. Clear cached staff views when revocation is learned, and avoid durable offline storage of staff projections. Previously viewed information or screenshots cannot be recalled.
 
 ## 6. Acceptance, Offline Sync, and Errors
+
+> **Replaced 26 Nov 2026** by upstream's trainer system: see `2026-11-26-adopt-upstream-trainers.md` and `docs/dev/PILOT_CUSTOMISATIONS.md` (pilot rules). The pilot's own gym module was removed in `7c116db91`; this section is kept as history.
 
 Each proposal version and acceptance has a stable identity. Acceptance commits the decision, member-state revision, and imported routine mapping atomically. Retries return the original result. Never mark a proposal accepted only on the device or regenerate routine identifiers on a retry.
 
