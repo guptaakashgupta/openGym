@@ -13,6 +13,7 @@ import { Button } from '../components/ui.jsx'
 import AdminCoach from './AdminCoach.jsx'
 import AdminCommunity from './AdminCommunity.jsx'
 import AdminOidc from '../components/AdminOidc.jsx'
+import { PRODUCT } from '../platform/config.js'
 import '../admin.css'
 
 // Admin-only operator dashboard (owner passkey + admin flag; guarded again server-side).
@@ -410,7 +411,53 @@ function AuditCard({ tick, owner }) {
   </div>
 }
 
+// Gym pilot (docs/plans/2026-11-26-adopt-upstream-trainers.md section 3): the operator gets the
+// gyms card and the free-trainer switch, nothing else of the instance dashboard. The server answers
+// only these routes in product mode, and the account list carries names, never training.
+function FreeTrainersCard({ users, tick, changed }) {
+  const toast = useUI(s => s.toast)
+  const [free, setFree] = useState(null)
+  useEffect(() => { api('/api/admin/gyms').then(d => setFree(new Set(d.freeTrainers.map(f => f.id)))).catch(e => toast(e.message)) }, [tick])
+  const set = (u, on) => api('/api/admin/user/trainer', { method: 'POST', body: JSON.stringify({ id: u.id, free: on }) })
+    .then(() => { toast(on ? u.name + ' can train people now' : u.name + ' is no longer a free trainer'); changed() })
+    .catch(e => toast(e.message))
+  return <div className="card">
+    <h2 style={{ margin: 0 }}>Free trainers</h2>
+    <div className="adm-lead">A free trainer works without a gym, like a personal trainer. People still decide what they share.</div>
+    <div className="list">{users.filter(u => !u.disabled).map(u => {
+      const on = !!free?.has(u.id)
+      return <div key={u.id} className="item">
+        <div className="grow"><div className="tt">{u.name} {on && <span className="adm-pill acc">free trainer</span>}</div></div>
+        <button className="btn xs" disabled={!free} onClick={() => on
+          ? confirmSheet({ title: 'Stop ' + u.name + ' training freely?', message: 'Their private members are paused at once. Gym trainer roles stay.', confirmText: 'Stop', danger: true, onConfirm: () => set(u, false) })
+          : set(u, true)}>{on ? 'Remove' : 'Allow'}</button>
+      </div>
+    })}</div>
+  </div>
+}
+
+function ProductAdmin() {
+  const nav = useNavigate()
+  const toast = useUI(s => s.toast)
+  const [users, setUsers] = useState(null)
+  const [tick, setTick] = useState(0)
+  useEffect(() => { api('/api/admin/users').then(d => setUsers(d.users)).catch(e => toast(e.message)) }, [tick])
+  const hasBack = (window.history.state?.idx || 0) > 0
+  return <div className="narrow">
+    <div className="hdr">
+      <button className="iconbtn" onClick={() => hasBack ? nav(-1) : nav('/settings/account', { replace: true })} aria-label="Back"><Icon name="chevronLeft" /></button>
+      <div style={{ flex: 1, marginInlineStart: 12 }}><h1 style={{ margin: 0 }}>Gyms and trainers</h1>
+        <div className="sub">{users ? users.length + ' users' : 'Loading…'}</div></div>
+      <button className="iconbtn" onClick={() => setTick(n => n + 1)} aria-label="refresh"><Icon name="reset" /></button>
+    </div>
+    <GymsCard users={users || []} tick={tick} />
+    <FreeTrainersCard users={users || []} tick={tick} changed={() => setTick(n => n + 1)} />
+  </div>
+}
+
 export default function Admin() {
+  // PRODUCT is fixed at build time, so the hooks below run the same way on every render.
+  if (PRODUCT) return <ProductAdmin />
   const nav = useNavigate()
   // Opened from Settings → AI Coach (the hosted app's way to the Coach, which is the server's):
   // straight to the Coach card rather than the top of the page.

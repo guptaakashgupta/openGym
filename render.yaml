@@ -63,6 +63,12 @@ services:
         value: "1"
       - key: VAPID_SUBJECT
         value: https://gym.askpocket.in
+      # Upstream trainers (docs/plans/2026-11-26-adopt-upstream-trainers.md). Gym leads see member
+      # names only; what a member shares goes to the trainers they connect to.
+      - key: TRAINERS
+        value: "on"
+      - key: TRAINERS_LEAD_ACCESS
+        value: none
       - key: SESSION_SECRET
         generateValue: true
       # External Render PostgreSQL URL with sslmode=verify-full. Do not use

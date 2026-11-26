@@ -3449,6 +3449,11 @@ const routes = {
   // training right now, as it did before 1.4.5, and that look is in the activity log.
   'GET /api/admin/users': async (req, res) => {
     const admin = await requireAdmin(req, res); if (!admin) return;
+    // Product mode: names to give gym and trainer roles to. No state, sync or presence is read.
+    if (CONFIG.mode === 'product') {
+      const users = (await IDENTITY.listUsers()).map(u => ({ id: u.id, name: u.name, disabled: !!u.disabled, admin: isAdmin(u) }));
+      return json(res, 200, { users, invite_only: true, data_view: false, trainers: TRAINERS, now: Date.now() });
+    }
     const view = ADMIN_DATA_VIEW;
     const users = db.users.map(u => {
       const S = readState(u.id) || {};
@@ -3768,18 +3773,30 @@ const APP_ORIGINS = new Set(['https://localhost', 'capacitor://localhost', 'http
 
 // The operator keeps the one-time password reset (account recovery); the rest of the instance-wide
 // dashboard, the Coach and per-profile uploads are file-mode features.
-// Product mode has no global signup. PILOT_OPEN_SIGNUP=1 is the operator's bootstrap switch, off
-// by default. A trainer's or gym's code as the way in comes with upstream's trainers
-// (docs/plans/2026-11-26-adopt-upstream-trainers.md section 3); until then nothing else opens it.
+// Product mode has no global signup. The way in is a trainer's (TR-…) or gym's (GY-…) code
+// (docs/plans/2026-11-26-adopt-upstream-trainers.md section 3), checked here and not spent: the
+// member spends it on the connect screen the app opens next, where consent is asked. PILOT_OPEN_SIGNUP=1
+// is the operator's bootstrap switch, off by default.
 const PILOT_OPEN_SIGNUP = /^(1|true|yes|on)$/i.test(process.env.PILOT_OPEN_SIGNUP || '');
 // The code rides in `invite`, or in the sign-in screen's own invite-code field (`code`).
 const signupInvite = body => {
   const v = typeof body.invite === 'string' && body.invite ? body.invite : CONFIG.mode === 'product' && typeof body.code === 'string' ? body.code.trim() : '';
   return v.length <= 200 ? v : '';
 };
+// A code that would connect right now: live (findCode), and its owner still allowed to hand it out.
+async function signupCodeLive(invite) {
+  const c = TRAINERS ? org.findCode(invite) : null;
+  const owner = c && await IDENTITY.getUser(c.ownerId);
+  return !!owner && perms.can(owner, c.kind === 'gym' ? 'gym:invite' : 'trainer:invite', { gymId: c.gymId }).ok;
+}
 // False when this signup may go ahead; otherwise the refusal has been answered.
 async function refuseSignup(req, res, invite) {
   if (CONFIG.mode !== 'product' || PILOT_OPEN_SIGNUP) return false;
+  if (invite) {
+    if (addressPaused(req, res, 'signup')) return true;
+    if (await signupCodeLive(invite)) return false;
+    strikeAddress(req, 'signup');
+  }
   audit(req, 'auth.register.denied', { ok: false, msg: invite ? 'invite-rejected' : 'invite-missing' });
   json(res, 403, { error: 'joining needs a code from your gym or trainer', code: 'invite' });
   return true;
@@ -3787,12 +3804,15 @@ async function refuseSignup(req, res, invite) {
 // Upstream surfaces whose data lives in db.json or other DATA_DIR files product mode does not keep
 // (docs/plans/2026-11-26-adopt-upstream-trainers.md step 2): the watch relay, scoped tokens and
 // the MCP connector's OAuth, the calendar feed, the community library and integrations. Trainers
-// and sharing open with TRAINERS on (step 3); their admin routes stay under /api/admin/* (step 4).
+// and sharing open with TRAINERS on (step 3), and with them the operator's gym and role admin
+// (step 4): the gyms, their staff, free trainers, and the account list to pick people from.
+const PRODUCT_ADMIN = new Set(['/api/admin/user/password-reset', ...(TRAINERS ? ['/api/admin/users', '/api/admin/gyms',
+  '/api/admin/gyms/new', '/api/admin/gyms/update', '/api/admin/gyms/staff', '/api/admin/user/trainer'] : [])]);
 const PRODUCT_CLOSED = ['/api/coach', '/api/oidc', '/api/watch', '/api/tokens', '/api/token', '/api/oauth', '/api/calendar',
   '/api/shared', '/api/integrations', ...(TRAINERS ? [] : ['/api/sharing', '/api/trainer', '/api/gym'])];
 const productUnavailable = key => {
   const path = key.slice(key.indexOf(' ') + 1);
-  if (path.startsWith('/api/admin/')) return path !== '/api/admin/user/password-reset';
+  if (path.startsWith('/api/admin/')) return !PRODUCT_ADMIN.has(path);
   if (path.startsWith('/.well-known/')) return true;
   if (PRODUCT_CLOSED.some(p => path === p || path.startsWith(p + '/'))) return true;
   return !OBJECTS && (path.startsWith('/api/media/') || path === '/api/media');

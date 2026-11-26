@@ -21,6 +21,9 @@ x-api-env: &api-env
   ORIGIN: https://${PILOT_DOMAIN:?}
   OBJECT_STORE: fs:/objects
   ADMIN_UIDS: ${ADMIN_UIDS:-}
+  # Upstream trainers; gym leads see member names only (docs/plans/2026-11-26-adopt-upstream-trainers.md).
+  TRAINERS: "on"
+  TRAINERS_LEAD_ACCESS: none
   AUDIT_DAYS: ${AUDIT_DAYS:-90}
   VAPID_SUBJECT: ${VAPID_SUBJECT:?}
 
@@ -40,7 +43,8 @@ services:
     env_file: ${SECRETS_FILE:?}
     environment: *api-env
     volumes:
-      - api-data:/data        # VAPID keys and temporary uploads only; accounts and history are in PostgreSQL
+      - api-data:/data        # VAPID keys, temporary uploads, and trainers' org.json and share/ (back these up);
+                              # accounts and history are in PostgreSQL
       - objects:/objects      # private uploads; back up with the database (PILOT_DATA_RECOVERY.md)
     logging: &logs
       driver: json-file

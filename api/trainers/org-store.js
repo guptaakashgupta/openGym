@@ -88,6 +88,11 @@ export function createOrgStore({ file, now = Date.now, leadMode = 'row' } = {}) 
   const staffOf = (gid, uid, role) => org.staff.find(s => s.gymId === gid && s.userId === uid && s.role === role && live(s)) || null;
   const isFreeTrainer = uid => org.trainers.some(t => t.userId === uid && live(t));
   const membership = (gid, uid) => org.memberships.find(m => m.gymId === gid && m.userId === uid && live(m)) || null;
+  // Pilot rule: one active gym per member. Leaving (leaveGym) frees the member for another.
+  const otherGym = (gid, uid) => org.memberships.some(m => m.gymId !== gid && m.userId === uid && live(m));
+  const oneGym = (gid, uid) => {
+    if (otherGym(gid, uid)) throw new OrgError(409, 'other-gym', 'you are in another gym already; leave it first');
+  };
   const grant = gid => org.grants.find(g => g.id === gid) || null;
 
   function endGrant(o, g, by) {
@@ -200,6 +205,7 @@ export function createOrgStore({ file, now = Date.now, leadMode = 'row' } = {}) 
       return mutate(o => {
         if (code.kind !== 'gym' || !code.gymId) throw new OrgError(400, 'not-gym-code', 'that is not a gym code');
         if (membership(code.gymId, memberId)) throw new OrgError(409, 'already-member', 'you are in this gym already');
+        oneGym(code.gymId, memberId);
         code.uses += 1;
         o.memberships.push({ gymId: code.gymId, userId: memberId, since: now(), until: null });
         let lead = null;
@@ -265,6 +271,7 @@ export function createOrgStore({ file, now = Date.now, leadMode = 'row' } = {}) 
         const already = o.grants.find(g => g.memberId === memberId && g.kind === 'trainer' && g.granteeId === code.ownerId
           && (g.gymId || null) === (code.gymId || null) && g.status !== 'ended');
         if (already) throw new OrgError(409, 'already-connected', 'you are already connected to this trainer', { grantId: already.id });
+        if (code.gymId) oneGym(code.gymId, memberId);
         const tScopes = cleanScopes(scopes);
         if (sharesNothing(tScopes)) throw new OrgError(400, 'nothing-shared', 'share at least one category');
         code.uses += 1;
@@ -390,7 +397,8 @@ export function createOrgStore({ file, now = Date.now, leadMode = 'row' } = {}) 
         if (roles.freeTrainer && !free) o.trainers.push({ userId: uid, since: now(), until: null, source });
         if (!roles.freeTrainer && free && free.source === source) free.until = now();
         for (const gid of roles.memberOf || []) {
-          if (gym(gid) && !membership(gid, uid)) o.memberships.push({ gymId: gid, userId: uid, since: now(), until: null, source });
+          // One gym per member: a claim for a second gym is skipped, not an error, so sign-in still works.
+          if (gym(gid) && !membership(gid, uid) && !otherGym(gid, uid)) o.memberships.push({ gymId: gid, userId: uid, since: now(), until: null, source });
         }
       });
       return rolesOf(uid);

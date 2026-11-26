@@ -12,6 +12,7 @@ import { useStore, hasData } from '../store/useStore.js'
 import { useUI } from '../store/useUI.js'
 import { t } from '../lib/i18n.js'
 import { dateLocale } from '../lib/i18n-core.js'
+import { openConnect } from '../platform/signup-code.js'
 import { api, webauthnOK, passkeyAssertion, passwordLogin, passwordRegister, passwordResetRedeem } from '../lib/api.js'
 import { askAddDeviceData } from '../sheets.jsx'
 import { Row, Button } from './ui.jsx'
@@ -179,7 +180,7 @@ export function PasswordRegisterForm({ close, inviteOnly, name, setName, code, s
     try {
       const u = await passwordRegister(n, pw, code.trim(), mail)
       const st = useStore.getState()
-      st.setUser(u); close()
+      st.setUser(u); close(); openConnect(code)
       if (hasData(useStore.getState().S)) { await st.pushState(); toast(t('Profile created, and this device’s data moved into it')) }
       else { await st.pullState(); toast(t('Welcome, {0}', u.name)) }
     } catch (e) { setErr(passwordError(e)) }
