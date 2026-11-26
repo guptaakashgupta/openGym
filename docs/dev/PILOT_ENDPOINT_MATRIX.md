@@ -8,6 +8,45 @@ Enforced by `api/test/platform/legacy-surface.test.js`; the gate is `productUnav
 Inventory taken 25 Oct 2026 with
 `rg -n 'db\.|readState|stateFile|fs\.|startCadence|startWarmup|setInterval' api/server.js api/coach mcp/src`.
 
+Status 26 Nov 2026: the Routes table below still lists the pilot gym module removed in `7c116db91`
+(`/api/platform/*`, gym invitations, `platformRecordings`). It is rewritten in step 5 of
+`docs/plans/2026-11-26-adopt-upstream-trainers.md`. The `DATA_DIR` section is current as of the
+merge of `main` (`dc56b5db0`).
+
+## DATA_DIR files after the merge of main
+
+Every file or folder `api/` reads or writes under `DATA_DIR` (Render: `/var/gym/data` on the
+`gym-files` disk, beside `OBJECT_STORE=fs:/var/gym/objects`). Taken 26 Nov 2026 with
+`rg -n 'DATA_DIR|path\.join\(DATA' api --glob '!test/**'` plus the stores' constructors.
+
+- **Adapted**: product mode keeps the data in PostgreSQL or the object store instead.
+- **Disk**: product mode keeps the file on the Render disk, as upstream does.
+- **Unavailable**: product mode closes the routes (`PRODUCT_CLOSED` / `productUnavailable` in
+  `api/server.js`, `404 unavailable`) and does not start the background work.
+
+| File under `DATA_DIR` | Written by | Product mode | Notes |
+| --- | --- | --- | --- |
+| `state-<uid>.json` | `storage/state-file.js` | Adapted | `member_states` (`state-postgres.js`). `removeAccount` still tries to unlink the file: a no-op |
+| `db.json`, `db.json.bak` | `saveDb` | Disk | Loaded at boot in both modes. Holds no account, credential, subscription or code in product mode (`IDENTITY`, `SUBS`, `TRANSIENT` are PostgreSQL). Its `apiTokens`, `watchLinks`, `invites` and OIDC fields are reached only through closed routes. `removeAccount` still calls `saveDb` |
+| `secret` | boot | Not used | File mode only; product mode signs with `SESSION_SECRET` |
+| `vapid.json` | boot, both modes | Disk | Generated on first boot if missing. Losing it invalidates every push subscription, so it belongs in the disk backup |
+| `audit.log` | `audit()` | Adapted | `audit_events` through `AUDIT_SINK`; `compactAudit` not run |
+| `uploads/<uid>/` | `media.js` | Adapted | Object store (`platform/uploads.js`, `media_objects`). `uploads-tmp/` holds uploads in flight only |
+| `.health-<pid>` | `dataWritable` | Disk | Health probe: one empty file written and removed |
+| `watch-<uid>.json` (+ `db.watchLinks`, in-memory `watchCodes`) | watch relay | Unavailable | `/api/watch/*` closed. Upstream leaves these routes without a session check, so the closure is the only guard |
+| `db.apiTokens`: scoped tokens, calendar feed tokens, MCP OAuth grants | `tokens.js`, `oauth.js`, calendar routes | Unavailable | `/api/tokens`, `/api/token`, `/api/oauth`, `/api/calendar`, `/.well-known/*` closed. `API_TOKENS` defaults on upstream; `/api/config` offers `api_tokens` in file mode only |
+| `shared/items.json`, `shared/blocklist.json`, `shared/media/` | `library/store.js` | Unavailable | `/api/shared/*` closed; `sweepShared` file mode only. Read at boot (missing is empty). `removeAccount` calls `library.removeUser`, whose `store.batch` always saves: each account deletion writes an empty `shared/items.json`. No personal data; left as is |
+| `integrations/u-<uid>.json`, `integrations/outbox.json` | `integrations/` | Unavailable | `/api/integrations/*` closed; `integrations.start()` file mode only; nothing is created unless `INTEGRATIONS` names a provider. Leave `INTEGRATIONS` unset in `deploy/pilot/` |
+| OIDC | `oidc/routes.js` | Unavailable | No file of its own: it changes `db.json` user records in place, so it is wired in file mode only. `/api/oidc/*` and `/.well-known/*` closed (not on the 26 Nov approved list; flagged) |
+| `org.json`, `org.json.bak` | `trainers/org-store.js` | Unavailable until step 3 | `/api/sharing`, `/api/trainer`, `/api/gym` closed and `TRAINERS` off. Read at boot (missing is empty). `removeAccount` calls `org.removeUser`, whose `mutate` always saves: each account deletion writes an empty `org.json`. No personal data while trainers are off |
+| `share/<uid>.json` | `share-log.js` | Unavailable until step 3 | Same closures; also appended by the closed token routes. `removeAccount` unlinks it: a no-op |
+| `coach.json`, `coach-auth-<uid>.json`, `coach/` | `coach/` | Unavailable | Unchanged from 25 Oct: `/api/coach/*` closed, cadence and warm-up not started |
+| admin socket | `admin-socket.js` | Not started | File mode only (`startAdminSocket`) |
+
+Background work added by `main`: check-in and Wrapped pushes in the reminder tick (file mode
+only), the library sweep (file mode only), integrations delivery (file mode only), and the
+trainers' hourly `org.expireOffers` (only with `TRAINERS` on).
+
 ## Routes
 
 | Route(s) | Product mode | Store |
