@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { insertionIndexAfterCurrentUnit, nextUnfinishedUnit, setProgressHighWater, supersetFlowStep, restAfterSet, restOnRecheck, restSecFor, warmupRestSecFor, sideRestFor, stepUnitIndex, advanceAfterTimedRest } from './supersetFlow.js'
+import { insertionIndexAfterCurrentUnit, nextUnfinishedUnit, setProgressHighWater, supersetFlowStep, restAfterSet, restOnRecheck, restSecFor, warmupRestSecFor, sideRestFor, ownSetRest, ownExerciseRest, stepUnitIndex, advanceAfterTimedRest, transitionRestFor } from './supersetFlow.js'
 
 const entry = done => ({ sets: done.map(value => ({ done: value })) })
 
@@ -156,6 +156,24 @@ describe('set-specific rests (Discord: rest for warm-ups and between sides)', ()
     expect(sideRestFor({}, { timed: true, restAfter: 5, switchSec: 10 })).toBe(5)
     expect(sideRestFor({ sideRestSec: 0 }, { timed: true, restAfter: 0, switchSec: 10 })).toBeNull()
   })
+  it('a set\'s own rest: a number of 0 or more, anything else is none (#609)', () => {
+    expect(ownSetRest({ restSec: 0 })).toBe(0)
+    expect(ownSetRest({ restSec: 90.4 })).toBe(90)
+    for (const v of [undefined, null, -5, '60', NaN]) expect(ownSetRest({ restSec: v }), String(v)).toBeNull()
+    expect(ownSetRest(undefined)).toBeNull()
+  })
+  it('a set\'s own rest is its pause between sides too, before the exercise\'s (#853)', () => {
+    expect(sideRestFor({ sideRestSec: 20 }, { timed: false, ownSec: 45 })).toBe(45)
+    expect(sideRestFor({}, { timed: false, ownSec: 30 })).toBe(30)
+    expect(sideRestFor({ sideRestOff: true }, { timed: false, ownSec: 30 })).toBe(30)
+    expect(sideRestFor({ sideRestSec: 20 }, { timed: false, ownSec: 0 })).toBeNull()
+    expect(sideRestFor({ sideRestSec: 20 }, { timed: false, ownSec: null })).toBe(20)
+  })
+  it('"no timer" between sides turns a hold\'s switch pause off, set rest or not (#636)', () => {
+    expect(sideRestFor({ sideRestOff: true }, { timed: true, restAfter: 90, switchSec: 10 })).toBeNull()
+    expect(sideRestFor({ sideRestOff: true, sideRestSec: 20 }, { timed: true, restAfter: 90, switchSec: 10 })).toBeNull()
+    for (const v of [false, 'true', 1]) expect(sideRestFor({ sideRestOff: v }, { timed: true, restAfter: 90, switchSec: 10 })).toBe(10)
+  })
 })
 
 describe('warmupRestSecFor', () => {
@@ -275,5 +293,69 @@ describe('advanceAfterTimedRest (#532)', () => {
     expect(advanceAfterTimedRest(entries, [[0, 1], [2]], 1, 0, timed([0, 1]))).toBe(2)
     expect(advanceAfterTimedRest(entries, [[0, 1], [2]], 1, 0, timed([1]))).toBeNull()
   })
+  it('moves weighted work on too when every exercise counts as ready to leave (#1017), a superset only after its round', () => {
+    const ex = sets => ({ id: 'x', sets: sets.map(done => ({ done, w: 50, r: 8 })) })
+    const all = () => true
+    expect(advanceAfterTimedRest([ex([true, true]), ex([false])], [[0], [1]], 0, 0, all)).toBe(1)
+    // a superset: one member still has work, so the screen stays with the round
+    expect(advanceAfterTimedRest([ex([true]), ex([false]), ex([false])], [[0, 1], [2]], 0, 0, all)).toBe(null)
+    // the last exercise: the finish sheet owns that moment
+    expect(advanceAfterTimedRest([ex([true]), ex([true])], [[0], [1]], 1, 1, all)).toBe(null)
+    // already moved on by hand: not dragged back or forward
+    expect(advanceAfterTimedRest([ex([true]), ex([false]), ex([false])], [[0], [1], [2]], 0, 2, all)).toBe(null)
+  })
 })
 
+
+// Discord (lajawi): an exercise can say "No timer" for itself (`restOff`), where a 0 rest has
+// always meant "the default".
+describe('an exercise on "No timer"', () => {
+  const ex = (target, sets = [{ done: true }, { done: false }]) => ({ target, sets })
+  it('rests nothing after its sets, whatever the default is', () => {
+    expect(restSecFor([ex({ restOff: true })], [0], 90)).toBe(0)
+    expect(restSecFor([ex({ restSec: 0 })], [0], 90)).toBe(90)
+    expect(restSecFor([ex({})], [0], 90)).toBe(90)
+  })
+  it('in a superset the other member’s rest still applies, the longest as always', () => {
+    expect(restSecFor([ex({ restOff: true, sg: 'a' }), ex({ sg: 'a' })], [0, 1], 90)).toBe(90)
+    expect(restSecFor([ex({ restOff: true, sg: 'a' }), ex({ restOff: true, sg: 'a' })], [0, 1], 90)).toBe(0)
+  })
+  it('a pyramid set’s own rest still stands in for it', () => {
+    expect(restSecFor([ex({ restOff: true })], [0], 90, { idx: 0, sec: 45 })).toBe(45)
+  })
+  it('a time picked next to it on an older app wins, and garbage reads as the default', () => {
+    expect(ownExerciseRest({ restOff: true, restSec: 120 })).toBe(120)
+    expect(ownExerciseRest({ restOff: true })).toBe(0)
+    expect(ownExerciseRest({ restOff: 'yes' })).toBeNull()
+    expect(ownExerciseRest({ restSec: -5 })).toBeNull()
+    expect(ownExerciseRest(undefined)).toBeNull()
+  })
+  it('its last warm-up goes into the first work set without a timer too', () => {
+    const e = { target: { restOff: true }, sets: [{ phase: 'warmup', done: true }, { done: false }] }
+    expect(warmupRestSecFor(e, 0, restSecFor([e], [0], 90), undefined)).toBe(0)
+  })
+})
+
+// D#487: a rest of its own between two exercises, to change machines.
+describe('transitionRestFor', () => {
+  const e = target => ({ target })
+  it('takes the exercise’s own, the longest across a superset, then the profile’s, else none', () => {
+    expect(transitionRestFor([e({ nextRestSec: 180 })], [0], 60)).toBe(180)
+    expect(transitionRestFor([e({ nextRestOff: true })], [0], 60)).toBe(0)
+    expect(transitionRestFor([e({ nextRestSec: 90 }), e({ nextRestSec: 150 })], [0, 1], null)).toBe(150)
+    expect(transitionRestFor([e({})], [0], 45)).toBe(45)
+    expect(transitionRestFor([e({})], [0], 0)).toBe(0)
+    expect(transitionRestFor([e({})], [0], undefined)).toBeNull()
+  })
+})
+
+describe('restKindAfter (#165)', () => {
+  it('names the rest a ticked set starts', async () => {
+    const { restKindAfter } = await import('./supersetFlow.js')
+    expect(restKindAfter({ row: { w: 60, r: 8 }, unitDone: true })).toBe('exercise')
+    expect(restKindAfter({ row: { w: 60, r: 8 }, superset: true })).toBe('superset')
+    expect(restKindAfter({ row: { w: 20, r: 8, phase: 'warmup' } })).toBe('warmup')
+    expect(restKindAfter({ row: { w: 60, r: 8 } })).toBe('work')
+    expect(restKindAfter({})).toBe('work')
+  })
+})

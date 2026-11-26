@@ -3,7 +3,8 @@
 // watch's events applied once each through the workout screen's own actions, drained from the
 // native queue and acknowledged only when done.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { buildSnapshot, buildReady, applyEvents, bindWatchActions, bindWatchAppActions, drainWatchEvents, _setWatchPluginForTest, _resetWatchSync, SNAPSHOT_VERSION } from './watch-sync.js'
+import { buildSnapshot, buildReady, applyEvents, bindWatchActions, bindWatchAppActions, drainWatchEvents, _setWatchPluginForTest, _resetWatchSync, SNAPSHOT_VERSION, watchExtras } from './watch-sync.js'
+import { readWatchPrefs } from './watch-settings.js'
 
 const state = (over = {}) => ({
   unit: 'kg', restSec: 90, workouts: [], routines: [],
@@ -28,8 +29,8 @@ describe('the snapshot', () => {
     expect(snap.active.entries).toHaveLength(2)
     const [a, b] = snap.active.entries
     expect(a).toMatchObject({ id: '0025', mode: 'reps', restSec: null, last: null })
-    expect(typeof a.name).toBe('string')
-    expect(a.name.length).toBeGreaterThan(0)
+    // Title-cased like the phone shows it, not the stored lower-case name.
+    expect(a.name).toBe('Barbell Bench Press')
     expect(a.sets).toEqual([{ w: 60, r: 8, sec: null, done: true, warmup: false }, { w: 60, r: 8, sec: null, done: false, warmup: false }])
     expect(b.restSec).toBe(120)
     expect(b.sets[0].warmup).toBe(true)
@@ -41,6 +42,10 @@ describe('the snapshot', () => {
     expect(buildSnapshot({ unit: 'kg' })).toEqual({ v: SNAPSHOT_VERSION, unit: 'kg', restSec: 0, active: null, ready: null })
     expect(buildSnapshot(state(), { timer: { endsAt: 5, paused: true } }).active.rest).toBeNull()
     expect(buildSnapshot(state(), { timer: { endsAt: 5, ready: true } }).active.rest).toBeNull()
+    // #1149: a paused rest says so, so the watch keeps its countdown; a skipped one (no timer) does not
+    expect(buildSnapshot(state(), { timer: { endsAt: 5, paused: true } }).active.restPaused).toBe(true)
+    expect(buildSnapshot(state(), { timer: null }).active).not.toHaveProperty('restPaused')
+    expect(buildSnapshot(state(), { timer: { endsAt: 5, ready: true } }).active).not.toHaveProperty('restPaused')
     expect(buildSnapshot(state({ unit: 'lb' })).active.unit).toBe('lb')
   })
 
@@ -151,6 +156,27 @@ describe('starting and finishing on the watch', () => {
     expect(snap.ready.today.name).toBe('Push')
   })
 
+  // #799: the watch's Apple Health workout used to be strength training whatever was planned.
+  it('tells the watch which Apple Health type each session is', () => {
+    const run = { id: 'r-run', name: 'Run', ex: [{ id: '0685', mode: 'cardio', min: 30, speed: 10 }] }
+    const S = { unit: 'kg', workouts: [], routines: [...routines, run], week: { 2: 'r-run' }, dayPlan: {} }
+    const ready = buildReady(S, '2026-10-13')
+    expect(ready.today.healthType).toBe('running')
+    expect(ready.others.map(o => o.healthType)).toEqual(['strength_training', 'strength_training'])
+    const active = { id: 'w1', name: 'Run', entries: [{ id: '0685', target: { mode: 'cardio', min: 30 }, sets: [{ min: 30, speed: 10 }] }] }
+    expect(buildSnapshot({ ...S, active }).active.healthType).toBe('running')
+  })
+
+  // The watch reads a snapshot whole or not at all: one odd routine must not cost it the others,
+  // and an id that came in as a number must still reach it as text.
+  it('one routine that cannot be built is left out, and every id goes as text', () => {
+    const odd = [{ id: 'r-odd', name: 'Odd' }, { id: 7, name: 'Imported', ex: [{ id: 25, sets: 1, reps: 5 }] }, ...routines]
+    const ready = buildReady({ unit: 'kg', workouts: [], routines: odd, week: { 2: 'r-push' }, dayPlan: {} }, '2026-10-13')
+    expect(ready.today).toMatchObject({ routineIds: ['r-push'] })
+    expect(ready.others.map(o => o.routineIds)).toEqual([['7'], ['r-pull']])
+    expect(ready.others[0].entries[0].id).toBe('25')
+  })
+
   it('a start from the watch starts the session with the watch\'s id and time, once; the sets after it wait for the workout screen', () => {
     let S = { active: null }
     const start = vi.fn((ids, opts) => { S = { active: { id: opts.id, entries: [{ id: '0025', sets: [{ w: 60, r: 8, done: false }] }] } } })
@@ -169,12 +195,18 @@ describe('starting and finishing on the watch', () => {
     expect(finish).toHaveBeenCalledTimes(1)
   })
 
-  it('a start while another workout runs on the phone keeps that one', () => {
+  // The watch's workout waits, however old its start is by now: it used to be let go of after two
+  // days, and with it every set logged at the wrist while a workout stayed open on the phone.
+  it('a start while another workout runs on the phone keeps that one, and waits for it to end', () => {
     const S = { active: { id: 'phone-1', entries: [] } }
     const start = vi.fn()
     bindWatchAppActions({ start })
-    expect(applyEvents([{ id: 's2', type: 'start', routineIds: ['r'], wid: 'watch-2', at: 1 }], () => ({ S }))).toEqual(['s2'])
+    const ev = { id: 's2', type: 'start', routineIds: ['r'], wid: 'watch-2', at: 1 }
+    expect(applyEvents([ev], () => ({ S }))).toEqual([])
     expect(start).not.toHaveBeenCalled()
+    S.active = null
+    expect(applyEvents([ev], () => ({ S }))).toEqual(['s2'])
+    expect(start).toHaveBeenCalledWith(['r'], expect.objectContaining({ id: 'watch-2', start: 1 }))
   })
 })
 
@@ -208,6 +240,16 @@ describe('the workout\'s animations for the watch', () => {
     expect(clipsFor({ active: null }, {})).toEqual([])
   })
 
+  it('names a clip for Wear OS only from a 180 px build, and only an animated WebP in the package', async () => {
+    const { wearClip } = await import('./watch-sync.js')
+    expect(wearClip('exercise-media/clip/0001.webp', 180)).toBe(true)
+    expect(wearClip('exercise-media/clip/0001.webp', 240)).toBe(false)   // the Plus APK
+    expect(wearClip('exercise-media/clip/0001.webp', 360)).toBe(false)   // the HD APK
+    expect(wearClip('exercise-media/clip/0001.mp4', 180)).toBe(false)
+    expect(wearClip('../secret.webp', 180)).toBe(false)
+    expect(wearClip('https://example.com/a.webp', 180)).toBe(false)
+  })
+
   it('or the downloaded 240 px pack of the figure, when it is there', async () => {
     const { clipsFor } = await import('./watch-sync.js')
     const packs = { 'anim-240-male': { state: 'ready', base: 'opengym-pack://anim-240-male' } }
@@ -221,6 +263,22 @@ describe('the workout\'s animations for the watch', () => {
     // a pack that is not ready, or of the other figure, is not used
     expect(clipsFor(state(), { 'anim-240-female': { state: 'ready' } })[0].path).toBeDefined()
     expect(clipsFor(state(), { 'anim-240-male': { state: 'downloading' } })[0].path).toBeDefined()
+  })
+
+  it('each with the still of the same figure beside it, for a watch that shows only stills (Wear OS)', async () => {
+    const { clipsFor } = await import('./watch-sync.js')
+    const { EXIDX, imgSrc } = await import('./exercises.js')
+    const packs = { 'anim-240-male': { state: 'ready' } }
+    for (const clips of [clipsFor(state(), {}), clipsFor(state(), packs)]) {
+      expect(clips.length).toBeGreaterThan(0)
+      for (const c of clips) {
+        expect(c.still).toMatch(/^exercise-media\/still\/[A-Za-z0-9_-]+\.webp$/)
+        expect(c.still).toBe(imgSrc(EXIDX[c.exId], 'male'))
+      }
+    }
+    // the female figure's still for a female profile
+    const female = clipsFor({ ...state(), body: 'female' }, {})
+    for (const c of female) expect(c.still).toBe(imgSrc(EXIDX[c.exId], 'female'))
   })
 })
 
@@ -262,5 +320,24 @@ describe('patching a saved workout', () => {
     expect(s.workouts[0].entries[0].sets[0]).toMatchObject({ w: 65, r: 6, at: 3000 })
     expect(recount).toHaveBeenCalledTimes(2)
     expect(s.workouts[0].vol).toBe(1)
+  })
+})
+
+describe('the birth year for the watch zones', () => {
+  const y = new Date().getFullYear()
+  it('sends a year that gives an age of 10 to 100', () => {
+    expect(watchExtras({ birthYear: y - 38 }).birthYear).toBe(y - 38)
+    expect(watchExtras({ birthYear: String(y - 10) }).birthYear).toBe(y - 10)
+    expect(watchExtras({ birthYear: y - 100 }).birthYear).toBe(y - 100)
+  })
+  it('sends nothing for no year, a junk year or an age outside 10 to 100', () => {
+    for (const birthYear of [undefined, null, 'abc', 0, y - 9, y - 101, y + 1]) expect(watchExtras({ birthYear })).not.toHaveProperty('birthYear')
+  })
+  it('sends nothing when the zones are off on the watch', () => {
+    expect(watchExtras({ birthYear: y - 38 }, { zones: false })).not.toHaveProperty('birthYear')
+    expect(watchExtras({ birthYear: y - 38 }, { zones: true }).birthYear).toBe(y - 38)
+    // the stored prefs keep the switch, so the off reaches watchExtras
+    const off = readWatchPrefs({ getItem: () => JSON.stringify({ show: { zones: false } }) }).show
+    expect(watchExtras({ birthYear: y - 38 }, off)).not.toHaveProperty('birthYear')
   })
 })

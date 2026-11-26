@@ -1,5 +1,7 @@
 package ch.duartesantos.opengym;
 
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
@@ -27,14 +29,54 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(ChannelPlugin.class);
         FlavorPlugins.register(this);
         registerPlugin(PrintPlugin.class);
+        registerPlugin(SaveImagePlugin.class);
         registerPlugin(RestAlertPlugin.class);
+        registerPlugin(LiveActivityPlugin.class);
         registerPlugin(BackupFolderPlugin.class);
         registerPlugin(BarIconsPlugin.class);
         registerPlugin(DeviceAuthPlugin.class);
+        registerPlugin(OidcBrowserPlugin.class);
         registerPlugin(AnimationPacksPlugin.class);
         registerPlugin(NudgeCheckPlugin.class);
+        registerPlugin(GymReminderPlugin.class);
+        registerPlugin(AppIconPlugin.class);
+        registerPlugin(NfcTagsPlugin.class);
+        registerPlugin(WidgetBridgePlugin.class);
+        registerPlugin(WatchBridgePlugin.class);
+        registerPlugin(OrientationPlugin.class);
+        registerPlugin(ReminderSoundPlugin.class);
+        // Text size "Like the phone": the system font scale goes to the page, not to the WebView's zoom.
+        registerPlugin(TextScalePlugin.class);
+        // Settings → Screen orientation (#821), before the first frame: no turn on the way in.
+        OrientationPlugin.applySaved(this);
         super.onCreate(savedInstanceState);
+        // After super: BridgeActivity swaps the splash theme for the app's own there, and the
+        // overlay has to go on top of that one (AccentTheme.java, #980).
+        AccentTheme.apply(this);
         passSystemBarsToPage();
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        showHealthPrivacy(intent);
+    }
+
+    // Health Connect's "why does this app ask?" link (the two activity-aliases in the manifest)
+    // must show the privacy policy, the same one the Play listing names: opened in the browser.
+    static final String PRIVACY_URL = "https://opengym.ch/privacy";
+    static boolean isHealthRationale(String action) {
+        return "androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE".equals(action)
+                || "android.intent.action.VIEW_PERMISSION_USAGE".equals(action);
+    }
+
+    private void showHealthPrivacy(Intent intent) {
+        if (intent == null || !isHealthRationale(intent.getAction())) return;
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(PRIVACY_URL)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (Exception e) {
+            // No browser: the app itself opens, as before.
+        }
     }
 
     /** For FlavorPlugins: registerPlugin is protected in BridgeActivity. */
@@ -82,6 +124,11 @@ public class MainActivity extends BridgeActivity {
         bridge.addWebViewListener(new WebViewListener() {
             @Override
             public void onPageLoaded(WebView view) {
+                // A new document starts without the variables, even when the bars themselves
+                // have not moved since the last page. Forget what applyBars last passed so it
+                // writes them again (it skips an unchanged top/bottom).
+                barTop = -1;
+                barBottom = -1;
                 applyBars(view);
                 view.evaluateJavascript(keyboardScript(keyboard), null);
             }

@@ -15,6 +15,7 @@ async function withUser(h, id = 'u1', name = 'Mei') {
   return h.session(id);
 }
 const bearer = tok => ({ Authorization: `Bearer ${tok}` });
+// Minting a pairing code asks the same proof as a device link (upstream 1.4): the password here.
 
 test('a session signed by one process is accepted by another: one managed secret', async t => {
   const h = await bootProduct(t);
@@ -28,7 +29,7 @@ test('a pairing code minted on one process redeems on another, once, as a renewa
   const h = await bootProduct(t, { env: { SESSION_DAYS: '1' } });
   const cookie = await withUser(h);
   const other = await h.another();
-  const { code } = (await h.req('POST', '/api/pair/create', { cookie, body: {}, ip: ip() })).body;
+  const { code } = (await h.req('POST', '/api/pair/create', { cookie, body: { current: GOOD }, ip: ip() })).body;
   const { rows } = await h.pool.query('SELECT code_hash FROM pairing_codes');
   assert.equal(rows.length, 1);
   assert.notEqual(rows[0].code_hash, code, 'only a hash of the code is stored');
@@ -51,7 +52,7 @@ test('a pairing code minted on one process redeems on another, once, as a renewa
 test('an expired pairing code is refused', async t => {
   const h = await bootProduct(t);
   const cookie = await withUser(h);
-  const { code } = (await h.req('POST', '/api/pair/create', { cookie, body: {}, ip: ip() })).body;
+  const { code } = (await h.req('POST', '/api/pair/create', { cookie, body: { current: GOOD }, ip: ip() })).body;
   await h.pool.query("UPDATE pairing_codes SET expires_at = now() - interval '1 second'");
   assert.equal((await h.req('POST', '/api/pair/redeem', { body: { code }, ip: ip() })).status, 400);
 });
@@ -61,7 +62,7 @@ test('sign out everywhere ends bearers on every process and voids an unredeemed 
   const cookie = await withUser(h);
   const other = await h.another();
   const token = h.token('u1', { kind: 'b' });
-  const { code } = (await h.req('POST', '/api/pair/create', { cookie, body: {}, ip: ip() })).body;
+  const { code } = (await h.req('POST', '/api/pair/create', { cookie, body: { current: GOOD }, ip: ip() })).body;
   assert.equal((await other('POST', '/api/logout/all', { cookie, body: {}, ip: ip() })).status, 200);
   assert.equal((await h.req('GET', '/api/me', { headers: bearer(token) })).status, 401);
   assert.equal((await h.req('POST', '/api/pair/redeem', { body: { code }, ip: ip() })).status, 400);

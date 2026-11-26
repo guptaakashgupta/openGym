@@ -5,8 +5,6 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import https from 'node:https';
-import dns from 'node:dns';
-import net from 'node:net';
 import { pipeline } from 'node:stream/promises';
 import {
   generateRegistrationOptions, verifyRegistrationResponse,
@@ -19,7 +17,8 @@ import { coachRoutes } from './coach/routes.js';
 import { startCadence } from './coach/cadence.js';
 import { startWarmup } from './coach/warmup.js';
 import { dayReminderPush, nudgePush, restTimerPush, testPush } from './push-messages.js';
-import { verifyError } from './verify-error.js';
+import { reminderOf as checkinReminderOf, dueKeys as checkinDueKeys, dueKind as checkinDueKind, checkinPush } from './checkin-reminder.js';
+import { verifyError, isMisconfigured, originHint } from './verify-error.js';
 import {
   hashPassword, verifyPassword, needsRehash, passwordProblem, passwordLength, nameKey, BusyError,
   MIN_LENGTH, MAX_LENGTH, makeResetCode, hashResetCode, resetCodeMatches, RESET_TTL_MS, warmUp,
@@ -27,31 +26,63 @@ import {
 } from './password.js';
 import { createBackoff, createWindow } from './rate-limit.js';
 import {
-  listPasskeys, addPasskeyRecord, renamePasskeyRecord, removePasskeyRecord, passkeyRemovalRefused, MAX_PASSKEYS,
+  listPasskeys, addPasskeyRecord, renamePasskeyRecord, passkeyRemovalRefused, MAX_PASSKEYS,
   transportsOf,
 } from './passkeys-store.js';
+// The admin's day-long recovery code (file mode only); everyday device links go through TRANSIENT.
+import { createDeviceLink, recoveryLinkOf, RECOVERY_TTL_MS } from './device-link.js';
+import {
+  createWatchCode, takeWatchCode, dropWatchCodes, createWatchLink, findWatchLink, touchWatchLink, listWatchLinks,
+  dropWatchLinks, boxOf, putSnapshot, pushEvents, queuedEvents, ackEvents
+} from './watch-relay.js';
+import { startAdminSocket } from './admin-socket.js';
 import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE } from './media.js';
 import { createProductMedia } from './platform/uploads.js';
 import { pruneAudit, scrubAudit } from './platform/lifecycle.js';
 import { objectStoreFrom } from './storage/objects.js';
 import { effectiveRoutineId } from './queue.js';
-import { prepareWrite, validateWrite, forClient, records } from './state/prepare-write.js';
+import { stampPut, highestStamp } from './sync-stamps.js';
+import { prepareWrite, validateWrite, forClient, records, WID_KEEP } from './state/prepare-write.js';
 import { atomicWrite as durableWrite } from './durable.js';
 import { loadConfig } from './platform/config.js';
 import { createStateStore, createIdentityStore, createTransientStore, createSubscriptionStore } from './storage/index.js';
 import { postgresAuditSink } from './storage/audit-postgres.js';
-import { IdentityConflictError } from './storage/identity.js';
+import { IdentityConflictError, claimsOf } from './storage/identity.js';
 import { StateUnreadableError } from './storage/state-file.js';
 import { StateUnsupportedError } from './storage/state-postgres.js';
 import { createPool } from './storage/postgres.js';
+import { ipv6Groups, guardedLookup, pushEndpointError, MAX_PUSH_ENDPOINT, outboundLookup } from './net-guard.js';
+import { createIntegrations } from './integrations/index.js';
+import { integrationRoutes } from './integrations/routes.js';
+import { buildIcs } from './integrations/calendar.js';
+import { deriveKey, seal as sealText, open as openSealed } from './integrations/crypto.js';
 import { excusedOn, nudgeFor, nudgeWindowOpen, toneOf } from './nudge.js';
+import { wrappedPushYear, wrappedSummary, wrappedPushOwed, wrappedPush } from './wrapped.js';
+import { createOrgStore } from './trainers/org-store.js';
+import { trainerRoutes } from './trainers/routes.js';
+import { dashboardRoutes } from './trainers/dashboard-routes.js';
+import { createNotify } from './trainers/notify.js';
+import { OrgError } from './trainers/org-store.js';
+import { nutritionSourceFrom } from './sources/nutrition.js';
+import { createPermissions } from './permissions.js';
+import { createShareLog } from './share-log.js';
+import { createToken, findToken, touchToken, listTokens, revokeTokens, scopedState, mergeScoped, readCategories, ScopeError, TOKEN_CATEGORIES, TOKEN_DAYS, DEFAULT_DAYS, TOKEN_PREFIX } from './tokens.js';
+import * as oauth from './oauth.js';
+import { createBudgets, createCodeGuard } from './budgets.js';
+import { libraryConfig, publicLibraryConfig } from './library/config.js';
+import { createLibraryStore } from './library/store.js';
+import { libraryRoutes } from './library/routes.js';
+import { currentConsent } from './consent.js';
+import { oidcConfig } from './oidc/config.js';
+import { createProvider } from './oidc/provider.js';
+import { oidcRoutes } from './oidc/routes.js';
 
 const PORT = +(process.env.PORT || 3000);
 const DATA = process.env.DATA_DIR || '/data';
 const CONFIG = loadConfig();
 // Product mode (the shared gym pilot) keeps member state in PostgreSQL; file mode never connects.
 const POOL = CONFIG.mode === 'product' ? createPool(CONFIG.databaseUrl) : null;
-const RP_ID = process.env.RP_ID || 'localhost';
+const RP_ID =process.env.RP_ID || 'localhost';
 const ORIGIN = process.env.ORIGIN || 'http://localhost:8080';
 const RP_NAME = process.env.RP_NAME || 'openGym';
 // Admin dashboard (issue): admins are matched by uid (or the admin flag FIRST_USER_ADMIN sets);
@@ -86,6 +117,23 @@ const ALLOW_GUEST = !/^(0|false|no|off)$/i.test(process.env.ALLOW_GUEST || '');
 // every account that opts in, so an instance has to ask for it. While it is off every password
 // route answers 404 and the app shows none of it; hashes already stored stay where they are.
 const PASSWORD_LOGIN = /^(1|true|yes|on)$/i.test(process.env.PASSWORD_LOGIN || '');
+// Trainers, gym leads and studios (docs/TRAINERS.md). Off by default: with it off every
+// /api/sharing, /api/trainer and /api/admin/gyms route answers 404 and the app shows nothing.
+const TRAINERS = /^(1|true|yes|on)$/i.test(process.env.TRAINERS || '');
+// How a gym lead gets to see a member: 'row' (own consent row, default), 'mirror' or 'none'
+// (api/trainers/scopes.js LEAD_MODES).
+const TRAINERS_LEAD_ACCESS = process.env.TRAINERS_LEAD_ACCESS || 'row';
+// Whether the admin dashboard shows a member's workouts and weigh-ins (1.4.5: off by default).
+// Off, admins see counts only; on, every look is in the activity log and the member's sharing log.
+const ADMIN_DATA_VIEW = /^(1|true|yes|on)$/i.test(process.env.ADMIN_DATA_VIEW || '');
+// The community library (docs/dev/SHARED-LIBRARY-API.md): LIBRARY=on, off by default. SHARING=off
+// still closes it. Read once; library/config.js has every SHARE_* switch.
+const LIBRARY = libraryConfig(process.env);
+// Sign in with an identity provider (#130, docs/SELF_HOSTING.md): on once OIDC_ISSUER and
+// OIDC_CLIENT_ID are set. OIDC_ONLY makes the provider the one way in (admins keep their passkeys).
+const OIDC = oidcConfig(process.env, { origin: ORIGIN });
+for (const p of OIDC.problems) console.warn('OIDC is off:', p);
+let oidcApi = null;   // the routes and helpers, made once everything they need exists (below)
 // The language the sign-in screen, and every profile that never picked one, starts in (#303) —
 // for an instance whose people share a language. Only a tag's shape is checked here; the app
 // matches it against the languages it has and ignores one it does not know. Unset, it is left
@@ -131,6 +179,9 @@ const lock = f => { try { fs.chmodSync(path.join(DATA, f), 0o600); } catch { /* 
 const secretFile = path.join(DATA, 'secret');
 if (CONFIG.mode === 'file' && !fs.existsSync(secretFile)) fs.writeFileSync(secretFile, crypto.randomBytes(32).toString('hex'), { mode: 0o600 });
 const SECRET = CONFIG.mode === 'product' ? CONFIG.sessionSecret : fs.readFileSync(secretFile, 'utf8').trim();
+// Integrations (integrations/, docs/INTEGRATIONS.md): off unless INTEGRATIONS names some. Their
+// connections live in DATA_DIR/integrations/, sealed with a key derived from SECRET.
+const integrations = createIntegrations({ dataDir: DATA, secret: SECRET, version: '1' });
 
 const dbFile = path.join(DATA, 'db.json');
 // Every account, passkey and invite. Only a missing file starts empty: an unreadable one (a write
@@ -197,6 +248,16 @@ function ownerId() {
   return db.users.find(isAdmin)?.id || null;
 }
 const isOwner = user => CONFIG.mode === 'file' && !!user && isAdmin(user) && user.id === ownerId();
+// Studios, roles and grants (org.json), each member's sharing log (share/<uid>.json), and the one
+// check every trainer, gym and library route asks (permissions.js).
+const org = createOrgStore({ file: path.join(DATA, 'org.json'), leadMode: TRAINERS_LEAD_ACCESS });
+const shareLog = createShareLog({ dir: path.join(DATA, 'share'), keepDays: Math.max(0, +(process.env.SHARE_LOG_DAYS || 365) || 0) });
+const perms = createPermissions({
+  org, userById: id => db.users.find(u => u.id === id) || null, isAdmin, isOwner,
+  flags: () => ({ trainers: TRAINERS, adminDataView: ADMIN_DATA_VIEW, sharing: LIBRARY.on })
+});
+const budgets = createBudgets();
+const codeGuard = createCodeGuard();
 // 0600: db.json holds passkey credential material. It used to be covered by a blanket 0700 on
 // the whole directory; now that the directory stays traversable, the file carries its own mode.
 // Once the new version is on disk, a second copy of it goes to db.json.bak, the same durable
@@ -221,6 +282,9 @@ const STATE_CACHE_MAX = 64;
 const STATE_CACHE_TTL_MS = Math.max(50, +(process.env.STATE_CACHE_TTL_MS || 600000) || 600000);
 const STATE = createStateStore(CONFIG, { dataDir: DATA, cacheTtlMs: STATE_CACHE_TTL_MS, cacheMax: STATE_CACHE_MAX, pool: POOL });
 const { stateFile, readState, readStateCached } = STATE;
+// The watch relay's mailbox of a profile (watch-relay.js): the page's last snapshot and what its
+// Zepp OS watches sent. Small, rewritten whole like the state file.
+const watchFile = uid => path.join(DATA, 'watch-' + uid.replace(/[^a-zA-Z0-9_-]/g, '') + '.json');
 // When a profile last fetched its document (GET /api/data). The document's own `_ts` moves only
 // on a push, so a device that only ever read — a second phone, a profile that trains elsewhere
 // and just looks — showed "last sync never" in the admin dashboard (QA 1.3.9). Kept on the user
@@ -263,116 +327,30 @@ const PUSH_TIMEOUT_MS = 10000;
 const PUSH_CONCURRENCY = 6;
 const MAX_SUBS_PER_USER = 20;
 
-function parseAllowedPrivateIps(raw) {
-  const list = new net.BlockList();
-  for (const entry of String(raw || '').split(/[\s,]+/).filter(Boolean)) {
-    const [from, to] = entry.split('-');
-    const [addr, prefix] = entry.split('/');
-    const family = net.isIPv6(addr) || net.isIPv6(from) ? 'ipv6' : 'ipv4';
-    try {
-      if (to !== undefined) list.addRange(from, to, family);
-      else if (prefix !== undefined && /^\d{1,3}$/.test(prefix)) list.addSubnet(addr, +prefix, family);
-      else if (net.isIP(entry)) list.addAddress(entry, family);
-      else throw new Error('not an address, range or CIDR block');
-    } catch {
-      console.warn(`ALLOWED_PRIVATE_IPS entry "${entry.slice(0, 60)}" is not a valid address, range or CIDR block — ignored`);
-    }
-  }
-  return list;
-}
-const ALLOWED_PRIVATE_IPS = parseAllowedPrivateIps(process.env.ALLOWED_PRIVATE_IPS);
-
-function isAllowedPrivateAddr(v) {
-  const family = net.isIPv6(v) ? 'ipv6' : net.isIPv4(v) ? 'ipv4' : null;
-  return family !== null && ALLOWED_PRIVATE_IPS.check(v.replace(/%.*$/, ''), family);
-}
-
-function isPrivateAddr(ip) {
-  const v = String(ip).toLowerCase();
-  if (isAllowedPrivateAddr(v)) return false;
-  const m4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(v);
-  if (m4) {
-    const a = +m4[1], b = +m4[2];
-    if (a === 0 || a === 10 || a === 127) return true;            // this-network, private, loopback
-    if (a === 169 && b === 254) return true;                      // link-local (cloud metadata)
-    if (a === 172 && b >= 16 && b <= 31) return true;             // private
-    if (a === 192 && b === 168) return true;                      // private
-    if (a === 192 && b === 0) return true;                        // 192.0.0.0/24, 192.0.2.0/24
-    if (a === 100 && b >= 64 && b <= 127) return true;            // CGNAT
-    if (a === 198 && (b === 18 || b === 19)) return true;         // benchmarking 198.18.0.0/15
-    if (a >= 224) return true;                                    // multicast + reserved
-    return false;
-  }
-  // IPv6 is judged on its eight groups, never on the text: the same address arrives as
-  // `::ffff:127.0.0.1` from dns.lookup, as `::ffff:7f00:1` from new URL, and in whatever
-  // spelling a caller chose, and a rule keyed to one spelling misses the others.
-  const g = ipv6Groups(v);
-  if (!g) return false;
-  if (g.slice(0, 5).every(x => x === 0) && g[5] === 0xffff) {     // IPv4-mapped IPv6
-    return isPrivateAddr(`${g[6] >> 8}.${g[6] & 255}.${g[7] >> 8}.${g[7] & 255}`);
-  }
-  if (g.slice(0, 7).every(x => x === 0) && g[7] <= 1) return true; // unspecified, loopback
-  if ((g[0] & 0xffc0) === 0xfe80) return true;                    // link-local fe80::/10
-  if ((g[0] & 0xffc0) === 0xfec0) return true;                    // site-local fec0::/10 (deprecated, still routed by some)
-  if ((g[0] & 0xfe00) === 0xfc00) return true;                    // unique local fc00::/7
-  if ((g[0] & 0xff00) === 0xff00) return true;                    // multicast ff00::/8
-  // The forms that carry an IPv4 address inside: on a host with NAT64 or a 6to4 relay they reach
-  // that IPv4 address, so they are judged by it. 64:ff9b:1::/48 is the local-use NAT64 prefix,
-  // which only ever translates into a network of the operator's own.
-  const v4 = (hi, lo) => isPrivateAddr(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
-  if (g.slice(0, 6).every(x => x === 0)) return v4(g[6], g[7]);          // IPv4-compatible ::a.b.c.d
-  if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every(x => x === 0)) return v4(g[6], g[7]); // NAT64 64:ff9b::/96
-  if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1) return true;       // local-use NAT64 64:ff9b:1::/48
-  if (g[0] === 0x2002) return v4(g[1], g[2]);                            // 6to4 2002::/16
-  return false;
-}
-
-// The eight 16-bit groups of an IPv6 literal in any textual form — compressed, zero-padded,
-// upper-case, with a dotted IPv4 tail — or null when the string is not one.
-function ipv6Groups(v) {
-  if (!net.isIPv6(v)) return null;
-  let s = v.replace(/%.*$/, '');                                  // zone id
-  const m4 = /:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(s);
-  if (m4) {
-    const [a, b, c, d] = m4[1].split('.').map(Number);
-    s = s.slice(0, -m4[1].length) + ((a << 8) | b).toString(16) + ':' + ((c << 8) | d).toString(16);
-  }
-  const [head, tail = ''] = s.split('::');
-  const groups = head ? head.split(':') : [];
-  const rest = tail ? tail.split(':') : [];
-  if (s.includes('::')) while (groups.length + rest.length < 8) groups.push('0');
-  return groups.concat(rest).map(x => parseInt(x, 16));
-}
-
-// Same shape as dns.lookup, so https.Agent can use it directly.
-function guardedLookup(hostname, options, cb) {
-  dns.lookup(hostname, options, (err, address, family) => {
-    if (err) return cb(err);
-    const list = Array.isArray(address) ? address : [{ address, family }];
-    if (list.some(a => isPrivateAddr(a.address))) {
-      return cb(Object.assign(new Error('refusing to connect to a private address: ' + hostname), { code: 'EPUSHBLOCKED' }));
-    }
-    cb(null, address, family);
-  });
-}
+// Same shape as dns.lookup (net-guard.js guardedLookup), so https.Agent can use it directly.
 const PUSH_AGENT = new https.Agent({ lookup: guardedLookup, keepAlive: false });
 
-// Cheap pre-check so a bad endpoint is refused at subscribe time with a useful message, rather
-// than silently never delivering. For a hostname PUSH_AGENT is what actually enforces the address
-// rule; for a literal address this is the check, which is why sendPush runs it again.
-function pushEndpointError(raw) {
-  let u;
-  try { u = new URL(String(raw || '')); } catch { return 'endpoint is not a valid URL'; }
-  if (u.protocol !== 'https:') return 'endpoint must be an https:// URL';
-  if (u.username || u.password) return 'endpoint must not carry credentials';
-  // A literal address is judged right here — and only here: Node hands a literal straight to
-  // connect() without consulting the Agent's lookup. Hostnames are left to PUSH_AGENT, which is
-  // the check that has to hold against rebinding.
-  const host = u.hostname.replace(/^\[|\]$/g, '');
-  if (/^[0-9.]+$/.test(host) || host.includes(':')) {
-    if (isPrivateAddr(host)) return 'endpoint must not point at a private address';
-  }
+// Real push services hand out endpoints of a few hundred characters (FCM, Mozilla, Apple are all
+// well under 1 KB) and keys of 87 (p256dh, a 65-byte point) and 22 (auth, 16 bytes) base64url
+// characters. Everything here lands in db.json, which every save rewrites whole, so nothing bigger
+// is ever stored (GHSA-g65f-rj2m-6wj9).
+// MAX_PUSH_ENDPOINT comes from net-guard.js, next to the endpoint check itself.
+const MAX_PUSH_KEY = 256;
+const PUSH_KEY_RE = /^[A-Za-z0-9_\-+/]+={0,2}$/;
+function pushKeyError(v) {
+  if (typeof v !== 'string' || !v || v.length > MAX_PUSH_KEY || !PUSH_KEY_RE.test(v)) return 'invalid subscription keys';
   return null;
+}
+
+// A db.json from before these limits may already carry an oversized row: drop it once at boot,
+// before the next save has to write it again.
+if (Array.isArray(db.subs)) {
+  const n = db.subs.length;
+  const tooBig = v => typeof v === 'string' && v.length > MAX_PUSH_KEY;
+  // Only size decides here: a row is never dropped for its format, just for being too big to keep.
+  db.subs = db.subs.filter(s => !(String(s?.endpoint ?? '').length > MAX_PUSH_ENDPOINT
+    || tooBig(s?.keys?.p256dh) || tooBig(s?.keys?.auth)));
+  if (db.subs.length !== n) { console.error(`push: dropped ${n - db.subs.length} oversized subscription(s)`); saveDb(); }
 }
 
 // `deviceId` narrows the send to the subscriptions one browser registered (the rest-timer alert
@@ -442,7 +420,7 @@ const restKey = (userId, deviceId) => `${userId}:${deviceId || ''}`;
 // devices they train with. Each request with a new id used to leave another hour-long timer (and
 // its push to every id-less subscription) behind, without limit; past this many, the oldest goes.
 const MAX_REST_TIMERS_PER_USER = 5;
-function scheduleRestTimer(userId, deviceId, sec, lang) {
+function scheduleRestTimer(userId, deviceId, sec, lang, next = null) {
   const k = restKey(userId, deviceId);
   const t = restTimers.get(k);
   if (t) clearTimeout(t);
@@ -453,7 +431,7 @@ function scheduleRestTimer(userId, deviceId, sec, lang) {
   }
   restTimers.set(k, setTimeout(() => {
     restTimers.delete(k);
-    sendPush(userId, restTimerPush(lang), deviceId);
+    sendPush(userId, restTimerPush(lang, next), deviceId);
   }, sec * 1000));
 }
 function cancelRestTimer(userId, deviceId) {
@@ -498,6 +476,82 @@ const hhmmToMin = v => {
 // Minutes since the reminder's time on the user's clock; negative before it, NaN when either
 // side does not parse. Same-day only — a 23:55 reminder is not owed at 00:05 the next day.
 const minutesLate = (time, now) => hhmmToMin(now.hhmm) - hhmmToMin(time);
+// A write the server makes into a profile on someone's behalf: a trainer's change, a suggestion the
+// member took, the member's Undo of a trainer change (trainers/ops.js). The same steps as PUT
+// /api/data, synchronous from read to rename so nothing can write in between: `fn(next, t)` changes
+// a copy of the stored document and stamps what it changed at `t` (a time later than every stamp in
+// it, so the change wins the member's devices' merge like one from a second device), then stampPut
+// joins the records and the document goes in one revision further. The devices see the new revision
+// on their next check (every half minute) and merge it. `skipIf(result)` true leaves the file alone.
+// A profile with no document on the server yet is refused: there is nothing of theirs to merge into.
+// Asynchronous since member state moved behind STATE (storage/): the read, `fn` and the write run
+// inside the store's per-profile serialisation (file mode) or row lock (product mode).
+async function writeStateAs(uid, fn, { skipIf = null } = {}) {
+  let cur, next, result, skipped = false;
+  try {
+    await STATE.updateMemberState(uid, stored => {
+      if (!stored) throw new OrgError(409, 'not-synced', 'they have not synced this profile with the server yet');
+      cur = stored;
+      next = JSON.parse(JSON.stringify(stored));
+      const t = Math.max(Date.now(), highestStamp(stored) + 1);
+      result = fn(next, t);
+      if (skipIf && skipIf(result)) { skipped = true; return null; }
+      stampPut(stored, next, { stamped: true, now: t });
+      next._rev = (stored._rev || 0) + 1;
+      next._ts = t;
+      next._wids = [...(Array.isArray(stored._wids) ? stored._wids : []), ...(stored._wid ? [stored._wid] : [])].filter(x => typeof x === 'string').slice(-WID_KEEP);
+      next._wid = crypto.randomBytes(8).toString('hex');
+      delete next.active;
+      return { state: next, text: JSON.stringify(next) };
+    });
+  } catch (e) {
+    if (e instanceof StateUnreadableError) throw new OrgError(503, 'state-unreadable', 'that profile cannot be read right now');
+    throw e;
+  }
+  if (!skipped) afterStateWrite(uid, cur, next);
+  return result;
+}
+// The write every route that replaces a profile's document ends in: PUT /api/data, and a scoped
+// token's PUT /api/token/data (tokens.js). `build(cur)` returns the write body (`{ state, baseRev?,
+// baseWid?, stamped? }`) for the stored document; the write rules are state/prepare-write.js, run
+// under the store's per-profile serialisation, and the answer goes out only once the store has
+// persisted the document. → { status, body }; StateUnreadableError / StateUnsupportedError pass up.
+async function commitState(uid, build) {
+  let cur;
+  const prepared = await STATE.updateMemberState(uid, stored => {
+    cur = stored;
+    const body = build(stored);
+    if (!body.state) return body;           // the builder's own answer: nothing to write
+    return prepareWrite(stored, body, { nextWriteId: () => crypto.randomBytes(8).toString('hex') });
+  });
+  if (typeof prepared.text === 'string') afterStateWrite(uid, cur, prepared.state);
+  return prepared;
+}
+// A profile's document for a route that answers 503 when it cannot be read (a damaged state file),
+// or undefined once that answer has gone out.
+async function readStateOr503(res, uid) {
+  try { return await STATE.readMemberState(uid); }
+  catch (e) {
+    if (!(e instanceof StateUnreadableError)) throw e;
+    console.error('state file unreadable for', uid);
+    json(res, 503, { error: 'state unreadable' });
+    return undefined;
+  }
+}
+// Bookkeeping after a stored write: the state is already saved, so nothing here may turn a
+// successful write into an error.
+function afterStateWrite(uid, cur, state) {
+  // Starts (or stops) the grace clock of every stored file this write stopped (or started)
+  // referencing. Product mode answers with a promise (platform/uploads.js), logged the same way.
+  if (MEDIA_ON) {
+    try { MEDIA.noteState(uid, state)?.catch?.(e => console.error('media noteState', e)); } catch (e) { console.error('media noteState', e); }
+  }
+  // A finished workout, a record or a weigh-in the profile's integrations asked to hear about:
+  // queued for delivery (integrations/outbox.js), never sent from inside this request.
+  if (CONFIG.mode === 'file') {
+    try { integrations.onStateWrite(uid, cur, state); } catch (e) { console.error('integrations onStateWrite', e); }
+  }
+}
 // Missed-workout nudge (nudge.js): opt-in on top of the reminder, so it needs everything the
 // reminder does (a push subscription, the reminder on, a zone). Owed from 20:00 — or 2 h after the
 // reminder — until 21:30 on the user's clock, the same catch-up idea as the reminder's window: a
@@ -534,12 +588,41 @@ function stateSummary(uid) {
     rem: r && typeof r === 'object' ? { on: !!r.on, tz: r.tz, time: r.time, nudge: !!r.nudge } : { on: false },
     consent: !!S?.coach?.consent?.agreedAt,
     settled: '',   // a local date the reminder was found to owe nothing on, for this file
+    wrapped: wrappedSummary(S),   // the December push (wrapped.js): a flag, a year, a few years
+    chk: (() => { const c = checkinReminderOf(S); return { on: c.on && Object.keys(c.items).length > 0, tz: c.tz || r?.tz, time: c.time }; })(),
+    chkSettled: '',   // a local date the check-in reminder was found to owe nothing on
   };
   stateSummaries.set(uid, sum);
   return sum;
 }
-// Product mode: the same summary from PostgreSQL (state-postgres.js readSummary), kept per user
-// against the stored revision instead of the file's mtime and size.
+// The check-in reminder (checkin-reminder.js, frontend/src/lib/checkin-reminder.js): one push on a
+// day where a measurement, a weigh-in or a progress photo is due, at its own time on the user's
+// clock, with the same catch-up window and once-per-date rule as the workout reminder
+// (`user.lastCheckin`). Its own switch: it goes out with the workout reminder off too.
+async function checkinTick(user, sum) {
+  const now = userNow(sum.chk.tz || 'UTC');
+  if (!now || user.lastCheckin === now.date || sum.chkSettled === now.date) return;
+  const late = minutesLate(sum.chk.time, now);
+  if (!(late >= 0 && late <= REMINDER_WINDOW_MIN)) return;
+  const S = readStateCached(user.id);
+  const kind = checkinDueKind(checkinDueKeys(S, now.date));
+  if (!kind) { sum.chkSettled = now.date; return; }
+  console.log('checkin reminder firing', user.id, kind);
+  await IDENTITY.updateUser(user.id, u => { u.lastCheckin = now.date; });
+  sendPush(user.id, checkinPush(S?.lang, kind));
+}
+// "Your year in openGym" (wrapped.js): once per user and year, on Dec 1 from 18:00 server time.
+// The year it went out for is written to db.json before the send, so a crash after it, a restart
+// or the next tick cannot send it twice. Read from the summary only: no state is parsed for it.
+async function wrappedTick(user, sum, year) {
+  if (!wrappedPushOwed(user, sum.wrapped, year)) return;
+  console.log('wrapped push firing', user.id, year);
+  await IDENTITY.updateUser(user.id, u => { u.wrappedPush = year; });
+  sendPush(user.id, wrappedPush(sum.wrapped.lang, year));
+}
+// Product mode: the reminder summary from PostgreSQL (state-postgres.js readSummary), kept per
+// user against the stored revision instead of the file's mtime and size. No check-in or wrapped
+// fields: those pushes are file mode only (docs/dev/PILOT_ENDPOINT_MATRIX.md).
 const productSummaries = new Map(); // uid -> { rev, rem, consent, settled }
 async function reminderSummary(uid) {
   if (CONFIG.mode === 'file') return stateSummary(uid);
@@ -562,6 +645,8 @@ setInterval(() => {
   reminderTick().catch(e => console.error('reminder tick', e)).finally(() => { reminderTickRunning = false; });
 }, REMINDER_TICK_MS).unref();
 async function reminderTick() {
+  // Server time, read through Date.now() so the tests' clock moves it too.
+  const wrappedYear = CONFIG.mode === 'file' ? wrappedPushYear(new Date(Date.now())) : null;
   for (const uid of await SUBS.userIds()) {
     const user = await IDENTITY.getUser(uid);
     if (!user || user.disabled) continue;    // locked out everywhere, reminders included
@@ -570,6 +655,8 @@ async function reminderTick() {
     // PUT /api/data refuses the obvious shapes, but a file already on disk answers to nobody.
     try {
       const sum = await reminderSummary(user.id);
+      if (wrappedYear && sum && user.wrappedPush !== wrappedYear) await wrappedTick(user, sum, wrappedYear);
+      if (sum?.chk?.on) await checkinTick(user, sum);
       if (!sum?.rem.on) continue;
       const now = userNow(sum.rem.tz || 'UTC');
       if (!now) continue;
@@ -625,9 +712,11 @@ const sessionVersion = user => user.sv || 0;
 // renewed (GET /api/me): a cookie value replayed as a bearer used to be traded for a fresh 90-day
 // token whenever it was past half its life, so a stolen cookie never had to expire. Tokens from
 // before the field have none and are renewed as before; the cookies among them expire on their own.
-function makeSession(user, kind = 'b') {
+// A fifth field, when present, is when the provider signed this session in (base 36 ms): a
+// sign-in there a few minutes ago counts as proof for a change to a way in (proveOwner).
+function makeSession(user, kind = 'b', at = null) {
   const exp = Date.now() + SESSION_DAYS * 86400000;
-  return sign(user.id + ':' + exp + ':' + sessionVersion(user) + ':' + kind);
+  return sign(user.id + ':' + exp + ':' + sessionVersion(user) + ':' + kind + (at ? ':' + Math.floor(at).toString(36) : ''));
 }
 // With the __Host- prefix the *browser* guarantees the cookie is host-only (no Domain attribute
 // is even allowed) — which is what stops a sibling subdomain, e.g. anything-else.example.com
@@ -679,7 +768,7 @@ async function sessionUser(tok) {
   if (!tok) return null;
   const payload = verifySig(tok);
   if (!payload) return null;
-  const [uid, exp, ver, kind] = payload.split(':');
+  const [uid, exp, ver, kind, at] = payload.split(':');
   if (!uid || +exp < Date.now()) return null;
   // Read fresh from the identity store on every request (storage/identity-*.js), so a disable, a
   // new password or "sign out everywhere" applies to the next request of every process.
@@ -690,7 +779,7 @@ async function sessionUser(tok) {
   // payload (it still had to pass the HMAC, so this is belt-and-braces) and is refused outright.
   const claimed = ver === undefined ? 0 : Number(ver);
   if (!Number.isInteger(claimed) || claimed !== sessionVersion(user)) return null;
-  return { user, exp: +exp, kind: kind || null };
+  return { user, exp: +exp, kind: kind || null, at: at ? parseInt(at, 36) || null : null };
 }
 async function readSession(req) {
   return (await sessionOf(req))?.user || null;
@@ -716,9 +805,13 @@ async function requireOwner(req, res) {
   if (!isOwner(user)) { audit(req, 'admin.denied', { ok: false, user }); json(res, 403, { error: 'only the owner can do this' }); return null; }
   return user;
 }
-const expireCookie = name => `${name}=; Path=/; Max-Age=0; HttpOnly;${SECURE} SameSite=Lax`;
-function sessionCookie(user) {
-  const fresh = `${COOKIE}=${makeSession(user, 'c')}; Path=/; Max-Age=${SESSION_DAYS * 86400}; HttpOnly;${SECURE} SameSite=Lax`;
+// SESSION_SAMESITE=strict keeps the session cookie off every request another site starts, top
+// level navigations included. Lax (the default) is what older installs had; the app itself works
+// with either, since it only ever calls its own API from its own pages.
+const SAME_SITE = /^strict$/i.test(process.env.SESSION_SAMESITE || '') ? 'Strict' : 'Lax';
+const expireCookie = name => `${name}=; Path=/; Max-Age=0; HttpOnly;${SECURE} SameSite=${SAME_SITE}`;
+function sessionCookie(user, at = null) {
+  const fresh = `${COOKIE}=${makeSession(user, 'c', at)}; Path=/; Max-Age=${SESSION_DAYS * 86400}; HttpOnly;${SECURE} SameSite=${SAME_SITE}`;
   // Signing in also retires any pre-upgrade cookie, so nobody is left carrying an unprefixed one
   // (or a shadowing copy of it) alongside the new session.
   return COOKIE === LEGACY_COOKIE ? [fresh] : [fresh, expireCookie(LEGACY_COOKIE)];
@@ -752,7 +845,15 @@ const clearCookie = COOKIE === LEGACY_COOKIE
 // The password routes are deliberately NOT exempt. A name and a password are a credential too,
 // but one a hostile page can know — its own — so an exempt POST /api/login/password would let
 // any site sign a visitor into the attacker's account and collect what they log (login CSRF).
-const CSRF_EXEMPT = new Set(['POST /api/pair/redeem']);
+// The watch relay's two routes for the watch are the same kind: the code in the body, or a watch
+// token in the Authorization header, which no browser attaches on its own.
+// The phone's OIDC redeem is the same kind as pair/redeem: a one-time code and the verifier only
+// the app holds, in the body; the token comes back in the body, never as a cookie.
+// A scoped token's write (tokens.js) is the same kind as the watch's: the token in the
+// Authorization header is the only credential the route reads, and no browser attaches one.
+// The connector's OAuth registration and token exchange (oauth.js) are called by the assistant's
+// own server: the code and verifier in the body are the credential, and no cookie is read.
+const CSRF_EXEMPT = new Set(['POST /api/oauth/register', 'POST /api/oauth/token', 'POST /api/oauth/revoke', 'POST /api/pair/redeem', 'POST /api/watch/redeem', 'POST /api/watch/box', 'POST /api/oidc/app/redeem', 'PUT /api/token/data']);
 // The routes that answer to the credential in the body and never to a Bearer. No Bearer is the
 // credential that acts there, so none buys the shortcut below: any valid token would do, the
 // attacker's own included.
@@ -766,6 +867,12 @@ const SIGN_IN_ROUTES = new Set([
   'POST /api/login/password', 'POST /api/register/password', 'POST /api/login/password-reset',
   'POST /api/device-link/options', 'POST /api/device-link/verify'
 ]);
+// A verify error as the answer's body: a passkey made at an address that is not ORIGIN/RP_ID gets
+// the same `code` as the origin check's 403, so the app explains both alike.
+const verifyAnswer = e => ({
+  error: verifyError(e, { rpId: RP_ID, origin: ORIGIN }),
+  ...(isMisconfigured(e) ? { code: 'origin-mismatch', expected: ORIGIN } : {})
+});
 const originsMatch = (a, b) => a.replace(/\/+$/, '') === b.replace(/\/+$/, '');
 // Whether a Bearer is the credential that would act on this request: it verifies, and no session
 // cookie sits beside it (readSession takes the cookie first, so a cookie is what would act then).
@@ -817,6 +924,25 @@ const takeChallenge = cid => TRANSIENT.takeChallenge(cid);
 // A passkey ceremony can't run inside the app's WebView (its origin never matches RP_ID), so the
 // app authenticates by redeeming a short code minted from an already signed-in browser tab —
 // same 5-min-TTL/one-shot shape as the WebAuthn challenge store above (storage/transient-*.js).
+
+/* ---------- the watch relay (watch-relay.js, docs/ZEPP_OS.md) ---------- */
+// Pairing codes for watches, in memory like the phone's: hashed, one per profile, ten minutes.
+const watchCodes = new Map();
+setInterval(() => { const now = Date.now(); for (const [k, v] of watchCodes) if (v.exp <= now) watchCodes.delete(k); }, 60000).unref();
+const readBox = uid => { try { return boxOf(JSON.parse(fs.readFileSync(watchFile(uid), 'utf8'))); } catch { return boxOf(null); } };
+const writeBox = (uid, box) => durableWrite(watchFile(uid), JSON.stringify(box), 0o600);
+// The watch link a request carries (`Authorization: Bearer ogw_…`), or null. Never a session: an
+// account that may not sign in, or whose sessions were all ended since, has no live links either.
+function watchLinkFor(req) {
+  const auth = req.headers.authorization || '';
+  if (!auth.startsWith('Bearer ')) return null;
+  const link = findWatchLink(db, auth.slice(7).trim(), uid => {
+    const u = db.users.find(x => x.id === uid);
+    return u && !u.disabled ? sessionVersion(u) : null;
+  });
+  if (link && touchWatchLink(link)) saveDb();
+  return link;
+}
 
 /* ---------- helpers ---------- */
 function json(res, code, obj, extraHeaders) {
@@ -1076,6 +1202,10 @@ const THROTTLED = {
   // budget: the password that may prove them counts its own failures (passwordAttempt).
   'POST /api/device-link/options': 'link', 'POST /api/device-link/verify': 'link',
   'POST /api/account/passkeys/options': null, 'POST /api/account/device-link': null,
+  // Pairing a phone: the same, for the password that may prove it.
+  'POST /api/pair/create': null,
+  // A watch's pairing code (watch-relay.js): a wrong one counts like a wrong device link.
+  'POST /api/watch/redeem': 'watch', 'POST /api/watch/pair': null,
   'DELETE /api/account/passkeys': null,
   // Deleting the account: the same, for the password that may prove it.
   'POST /api/account/delete': null
@@ -1133,6 +1263,71 @@ setInterval(() => { FAIL_AUDIT.sweep(); FAIL_AUDIT_ALL.sweep(); }, 60000).unref(
 function auditFail(req, ev, f) {
   if (FAIL_AUDIT.take(ev + '|' + limitAddress(req)) || FAIL_AUDIT_ALL.take(ev)) return;
   audit(req, ev, f);
+}
+
+/* ---------- scoped tokens (tokens.js) ---------- */
+// API_TOKENS=off takes the routes away (404). MCP=on tells the app a /mcp endpoint is served next
+// to it (the mcp container, docs/MCP_REMOTE.md), so Settings can show its address.
+const API_TOKENS = !/^(0|false|no|off)$/i.test(process.env.API_TOKENS || '');
+const MCP_ON = /^(1|true|yes|on)$/i.test(process.env.MCP || '');
+// Per token: reads a minute and writes an hour. A client looping on a tool meets these long
+// before the profile's devices notice it; a refused token is not counted against an address,
+// since 256 random bits are nothing to guess, and the MCP container sends every client's request
+// from one address (only the audit of failures is throttled, auditFail).
+const TOKEN_READS = createWindow({ max: Math.max(1, +(process.env.TOKEN_READS_PER_MIN || 120) || 120), windowMs: 60000 });
+const TOKEN_WRITES = createWindow({ max: Math.max(1, +(process.env.TOKEN_WRITES_PER_HOUR || 60) || 60), windowMs: 3600000 });
+setInterval(() => { TOKEN_READS.sweep(); TOKEN_WRITES.sweep(); }, 60000).unref();
+const tokenActor = row => ({ kind: 'token', id: row.id, name: row.name });
+function logToken(uid, ev, row) {
+  try { shareLog.append(uid, { ev, actor: { kind: 'self', id: uid, name: '' }, peer: tokenActor(row), msg: Object.entries(row.scopes || {}).filter(([, v]) => v !== 'off').map(([k, v]) => k + ':' + v).join(' ') }); }
+  catch (e) { console.error('share log', e.message); }
+}
+// A look is noted once a day per token and category: the log folds them per day anyway, and a
+// client reads before every tool call.
+const tokenLooks = new Set();
+function noteTokenRead(t) {
+  const day = new Date().toISOString().slice(0, 10);
+  for (const cat of readCategories(t.row.scopes)) {
+    const k = `${t.row.id}|${cat}|${day}`;
+    if (tokenLooks.has(k)) continue;
+    if (tokenLooks.size > 20000) tokenLooks.clear();
+    tokenLooks.add(k);
+    try { shareLog.noteAccess(t.user.id, tokenActor(t.row), cat); } catch (e) { console.error('share log', e.message); }
+  }
+}
+// The token a request carries, and its profile, or null after answering 401 (or 429). Only the
+// token routes ask this: a token is never a session.
+function tokenAuth(req, res) {
+  const auth = req.headers.authorization || '';
+  const tok = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  const found = tok.startsWith(TOKEN_PREFIX) ? findToken(db, tok, uid => db.users.find(u => u.id === uid) || null) : null;
+  // A calendar feed's token reads its feed and nothing else (integrations/calendar.js).
+  const row = found && !found.kind ? found : null;
+  if (!row) {
+    auditFail(req, 'auth.token.fail', { ok: false, msg: tok ? 'token-invalid' : 'no-token' });
+    json(res, 401, { error: 'token not accepted', code: 'token-invalid' }, { 'WWW-Authenticate': 'Bearer error="invalid_token"' });
+    return null;
+  }
+  const user = db.users.find(u => u.id === row.userId);
+  // Every request spends the per-minute budget, a write too (its own hourly one comes on top,
+  // once it would change something).
+  const wait = TOKEN_READS.take(row.id);
+  if (wait) { tooMany(res, wait); return null; }
+  if (touchToken(row)) saveDb();
+  return { row, user };
+}
+
+/* ---------- the calendar feed (integrations/calendar.js, docs/CALENDAR.md) ---------- */
+// One feed address per profile: a `calendar` token in its path, sealed in its row so Settings can
+// show the address again. A new address ends the old one; "Turn off" ends it.
+const CAL_KEY = (() => { try { return deriveKey(SECRET); } catch { return null; } })();
+const calRow = uid => (db.apiTokens || []).find(r => r && r.userId === uid && r.kind === 'calendar' && !(r.exp && r.exp <= Date.now())) || null;
+const calUrl = token => ORIGIN.replace(/\/$/, '') + '/api/calendar/' + token + '.ics';
+function calView(user) {
+  const r = calRow(user.id);
+  if (!r || r.sv !== (user.sv || 0)) return { on: false };
+  const token = CAL_KEY ? openSealed(CAL_KEY, r.seal, 'calendar:' + r.id) : null;
+  return { on: true, id: r.id, done: r.scopes?.workouts === 'view', created: r.created, used: r.used || null, ...(token ? { url: calUrl(token) } : {}) };
 }
 
 /* ---------- password sign-in (#118) ---------- */
@@ -1223,7 +1418,11 @@ const freshSet = prev => {
   return new Date(t).toISOString();
 };
 const passkeyCount = async u => (await IDENTITY.listCredentials(u.id)).length;
-const publicUser = u => ({ id: u.id, name: u.name, admin: isAdmin(u), ...(isOwner(u) ? { owner: true } : {}) });
+const publicUser = u => ({ id: u.id, name: u.name, admin: isAdmin(u), ...(isOwner(u) ? { owner: true } : {}), ...(oidcWayIn(u) ? { oidc: true } : {}) });
+// A linked provider identity is a way in while the provider is configured (and the same issuer).
+const oidcWayIn = u => !!(OIDC.enabled && u?.oidc && String(u.oidc.iss || '').replace(/\/+$/, '') === OIDC.issuer);
+// The ways in besides passkeys, for "never remove the last one".
+const otherWaysIn = u => (passwordWayIn(u) ? 1 : 0) + (oidcWayIn(u) ? 1 : 0);
 const POLICY_ERRORS = {
   'too-short': `the password needs at least ${MIN_LENGTH} characters`,
   'too-long': `the password can have at most ${MAX_LENGTH} characters`,
@@ -1325,6 +1524,11 @@ function passwordAttempt(req, res, k) {
 // proof is logged as `auth.proof.fail` for that change, not as a failed sign-in — the owner was
 // signed in all along, and "Password sign-in failed" sent an admin looking for the wrong thing.
 async function proveOwner(req, res, user, body, act) {
+  if (body.provider === true && oidcApi) {
+    if (await oidcApi.providerProof(req, user)) return 'provider';
+    json(res, 403, { error: 'sign in with your provider again first', code: 'reauth-required' });
+    return null;
+  }
   if (body.credential) {
     if (await passkeyStepUp(user, body)) return 'passkey';
     audit(req, 'auth.proof.fail', { ok: false, user, msg: 'step-up-failed', act });
@@ -1379,12 +1583,29 @@ async function removeAccount(u) {
   await SUBS.removeUser(u.id);
   await TRANSIENT.dropDeviceLinks(u.id);
   await TRANSIENT.dropPairings(u.id);
+  // The watch relay and scoped tokens live in db.json (file mode only; closed in product mode).
+  dropWatchLinks(db, u.id);
+  dropWatchCodes(watchCodes, u.id);
+  revokeTokens(db, u.id);
   presence.delete(u.id);
   // The training history and any Coach credential of theirs, both outside db.json.
   try { fs.unlinkSync(stateFile(u.id)); } catch { /* already gone */ }
+  try { fs.unlinkSync(watchFile(u.id)); } catch { /* never had a watch */ }
   try { coachConfig.clearProfileAuth(u.id); } catch { /* nothing stored */ }
+  // The Coach's own record of them: plans waiting for a yes, the job history, the cohort switch.
+  try { coachJobs.removeUser(u.id); } catch (e) { console.error('coach: could not remove the record of', u.id, e.message); }
   // Their photos and videos — the one place a profile's folder under uploads/ is removed.
   try { MEDIA.removeUser(u.id); } catch (e) { console.error('media: could not remove uploads of', u.id, e.message); }
+  // Their integrations: connections, sealed secrets and anything still waiting to be sent.
+  try { integrations.removeUser(u.id); } catch (e) { console.error('integrations: could not remove', u.id, e.message); }
+  // Their grants, consents, roles and sharing log; as a trainer their name leaves members' logs.
+  try {
+    const members = org.removeUser(u.id);
+    shareLog.remove(u.id);
+    shareLog.anonymize(members, u.id);
+  } catch (e) { console.error('org: could not remove', u.id, e.message); }
+  // What they shared with the server stops being shared; copies others took stay theirs.
+  try { library.removeUser(u.id); } catch (e) { console.error('library: could not withdraw items of', u.id, e.message); }
   saveDb();
 }
 
@@ -1423,6 +1644,7 @@ const passwordRoutes = {
       return json(res, 403, { error: 'this account has been disabled', code: 'disabled' });
     }
     check.ok();
+    if (oidcOnlyRefused(res, user)) return audit(req, 'auth.password.fail', { ok: false, user, msg: 'oidc-only' });
     // A hash made with older parameters is replaced now, while the password is at hand.
     if (needsRehash(rec.h)) {
       try {
@@ -1564,7 +1786,7 @@ const passwordRoutes = {
     const body = await readBody(req);
     const lastWayIn = () => json(res, 409, { error: 'the password is the only way into this profile', code: 'last-way-in' });
     if (!hasPassword(user)) return json(res, 200, { ok: true });
-    if (!(await passkeyCount(user))) return lastWayIn();
+    if (!(await passkeyCount(user)) && !oidcWayIn(user)) return lastWayIn();
     const proof = await proveOwner(req, res, user, body, 'password-remove');
     if (!proof) return;
     // Everything above awaited: the session may have ended, and the profile's last passkey may
@@ -1575,7 +1797,7 @@ const passwordRoutes = {
     let refused = false;
     const removed = await IDENTITY.updateUser(user.id, async u => {
       if (!hasPassword(u)) return u;
-      if (!(await passkeyCount(u))) { refused = true; return u; }
+      if (!(await passkeyCount(u)) && !oidcWayIn(u)) { refused = true; return u; }
       delete u.pw;
       return u;
     });
@@ -1685,6 +1907,7 @@ const passwordRoutes = {
       audit(req, 'auth.password.reset', { ok: false, user, msg: 'account-disabled' });
       return json(res, 403, { error: 'this account has been disabled', code: 'disabled' });
     }
+    if (oidcOnlyRefused(res, user)) return;
     // The code is good and stays good until a password is actually set with it.
     const problem = passwordProblem(body.next, user.name);
     if (problem) return policyError(res, problem);
@@ -1736,6 +1959,24 @@ const passwordRoutes = {
 // The last admin may not delete their own profile while anyone else is on the instance: nobody
 // could run it from the app afterwards. Alone on it, they may go.
 const lastAdminLeaving = u => isAdmin(u) && db.users.length > 1 && db.users.filter(isAdmin).length <= 1;
+// Makes a recovery code for `target` (#584): a device link that lives a day and says who made it
+// (`by`: the admin, or null for the server's own command). Making it signs the profile out
+// everywhere, as a password reset does: it is asked for when the devices are lost, and a lost phone
+// should not stay signed in for the day the code is good. Pairing codes and device links go too.
+// Passkeys and the password are left alone; the person removes the lost device's passkey in
+// Settings once they are back. Saved and audited here, whoever asked.
+// File mode only: the admin routes and recover.js that ask for it are unavailable in product mode,
+// so the day-long link is written straight into db.json's device links.
+async function issueRecovery(req, target, by) {
+  await IDENTITY.updateUser(target.id, u => { u.sv = sessionVersion(u) + 1; });
+  await dropWaysIn(target.id);
+  presence.delete(target.id);
+  const made = createDeviceLink(db, target.id, Date.now(), RECOVERY_TTL_MS, { kind: 'recovery', by: by ? by.id : 'server' });
+  saveDb();
+  audit(req, by ? 'admin.recovery.create' : 'server.recovery.create', { ...(by ? { user: by } : {}), target, msg: by ? null : 'recover.js' });
+  return made;
+}
+
 // passkeys-store.js counts and shapes a db-like `{ creds }`; this is that view for one account,
 // read from the identity store.
 const credsOf = async uid => ({ creds: await IDENTITY.listCredentials(uid) });
@@ -1743,7 +1984,7 @@ const passkeyState = async u => {
   const passkeys = listPasskeys(await credsOf(u.id), u.id);
   // `password`: whether the password can confirm an addition or a removal (proveOwner) — only
   // while password sign-in is on. `lastWayIn`: whether removing any one passkey would be refused.
-  return { passkeys, password: passwordWayIn(u), lastWayIn: passkeys.length + (passwordWayIn(u) ? 1 : 0) <= 1 };
+  return { passkeys, password: passwordWayIn(u), lastWayIn: passkeys.length + otherWaysIn(u) <= 1 };
 };
 const LIMIT = { error: `a profile can have at most ${MAX_PASSKEYS} passkeys`, code: 'passkey-limit' };
 const LINK_INVALID = { error: 'that code is wrong, used or expired', code: 'link-invalid' };
@@ -1786,7 +2027,7 @@ async function newPasskey(req, res, c, body, ev, user) {
   } catch (e) {
     // e.message can echo attacker-supplied response fields, so only the reason code is kept.
     audit(req, ev, { ok: false, user, msg: 'verify-error' });
-    json(res, 400, { error: verifyError(e, { rpId: RP_ID, origin: ORIGIN }) });
+    json(res, 400, verifyAnswer(e));
     return null;
   }
   if (!verification.verified) {
@@ -1875,7 +2116,7 @@ const passkeyRoutes = {
     const id = new URL(req.url, 'http://x').searchParams.get('id') || '';
     const body = await readBody(req);
     const refuse = r => json(res, r.code === 'last-way-in' ? 409 : 404, { error: r.error, code: r.code });
-    const refused = passkeyRemovalRefused(await credsOf(user.id), user.id, id, passwordWayIn(user) ? 1 : 0);
+    const refused = passkeyRemovalRefused(await credsOf(user.id), user.id, id, otherWaysIn(user));
     if (refused) return refuse(refused);
     const proof = await proveOwner(req, res, user, body, 'passkey-remove');
     if (!proof) return;
@@ -1884,10 +2125,9 @@ const passkeyRoutes = {
     // Checked again with the removal, under the account's lock: a passkey or the password removed
     // by a request alongside counts.
     const r = await IDENTITY.removeCredentialChecked(user.id, id,
-      (creds, now) => passkeyRemovalRefused({ creds }, user.id, id, passwordWayIn(now) ? 1 : 0));
+      (creds, now) => passkeyRemovalRefused({ creds }, user.id, id, otherWaysIn(now)));
     if (r.error) return refuse(r);
     await TRANSIENT.dropDeviceLinks(user.id);
-    saveDb();
     audit(req, 'auth.passkey.remove', { user, msg: r.row.name || null });
     json(res, 200, { ok: true, ...(await passkeyState(user)) });
   },
@@ -1930,10 +2170,12 @@ const passkeyRoutes = {
       audit(req, 'auth.link.fail', { ok: false, uid: link.userId, msg: 'user-unavailable' });
       return json(res, 400, LINK_INVALID);
     }
-    if (await passkeyCount(user) >= MAX_PASSKEYS) return json(res, 409, LIMIT);
+    // A recovery code still works on a profile full of passkeys: the oldest unused one makes room
+    // (verify below). The lost devices' passkeys are what fill it.
+    if (link.kind !== 'recovery' && await passkeyCount(user) >= MAX_PASSKEYS) return json(res, 409, LIMIT);
     const options = await moreOptions(user);
     const cid = await putChallenge({ challenge: options.challenge, uid: user.id, kind: 'link', lh: link.h });
-    json(res, 200, { cid, options, id: user.id, name: user.name });
+    json(res, 200, { cid, options, id: user.id, name: user.name, ...(link.kind === 'recovery' ? { recovery: true } : {}) });
   },
 
   // Step two: the new passkey is stored, the code is burned, and this device is signed in by the
@@ -1955,6 +2197,7 @@ const passkeyRoutes = {
       return json(res, 400, { error: 'challenge expired, try again', code: 'challenge-expired' });
     }
     const owner = await IDENTITY.getUser(link.userId);
+    if (oidcOnlyRefused(res, owner)) return;
     const cred = await newPasskey(req, res, c, body, 'auth.link.fail', owner || { id: link.userId });
     if (!cred) return;
     // Everything above awaited: the code may have been used, replaced or dropped since (a sign-out
@@ -1966,6 +2209,13 @@ const passkeyRoutes = {
       audit(req, 'auth.link.fail', { ok: false, uid: link.userId, msg: 'link-invalid' });
       return json(res, 400, LINK_INVALID);
     }
+    const recovery = link.kind === 'recovery';
+    // Recovery on a full profile: the passkey used longest ago goes, to make room for this one.
+    let dropped = null;
+    if (recovery && await passkeyCount(user) >= MAX_PASSKEYS) {
+      const oldest = listPasskeys(await credsOf(user.id), user.id).slice().sort((a, b) => String(a.lastUsed || a.created || '').localeCompare(String(b.lastUsed || b.created || '')))[0];
+      if (oldest && await IDENTITY.removeCredential(oldest.id)) dropped = oldest;
+    }
     const added = await storePasskey(user.id, cred, { lastUsed: new Date().toISOString() });
     if (added.error) {
       // Refused (the limit, a passkey already registered): the code is not spent, as upstream,
@@ -1974,7 +2224,7 @@ const passkeyRoutes = {
       audit(req, 'auth.link.fail', { ok: false, user, msg: added.code });
       return json(res, 409, { error: added.error, code: added.code });
     }
-    audit(req, 'auth.link.ok', { user, msg: added.row.name || null });
+    audit(req, recovery ? 'auth.recovery.ok' : 'auth.link.ok', { user, msg: [added.row.name, dropped && `replaced ${dropped.name || 'a passkey'}`].filter(Boolean).join(', ') || null });
     json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': sessionCookie(user) });
   }
 };
@@ -2074,6 +2324,16 @@ async function sendMediaFile(res, f, hash) {
   catch { res.destroy(); }   // the client went away mid-download; nothing left to answer
 }
 
+// GHSA-699c-6p5r-q574: a device sends the account it means a media request for. A sync started
+// under A that is still sending after this browser signed in as B (another tab) must not land in
+// B's folder. Without the header (an older app) the session alone decides, as before.
+const ACCOUNT_HEADER = 'x-opengym-account';
+const wrongAccount = (req, user) => {
+  const want = req.headers[ACCOUNT_HEADER];
+  return typeof want === 'string' && want !== '' && want !== String(user.id);
+};
+const ACCOUNT_MISMATCH = { error: 'signed in as another account now', code: 'account-mismatch' };
+
 const mediaRoutes = {
   // The raw bytes of one file, named by the sha256 the client computed. media.js checks the
   // hash, the magic bytes, the caps, the quota and the free disk; this route only adds the
@@ -2081,6 +2341,7 @@ const mediaRoutes = {
   'PUT /api/media/{hash}': async (req, res) => {
     const user = await readSession(req);
     if (!user) { MEDIA.discard(req); return json(res, 401, { error: 'not signed in' }); }
+    if (wrongAccount(req, user)) { MEDIA.discard(req); return json(res, 409, ACCOUNT_MISMATCH); }
     try { mediaThrottle(req, user, MEDIA_BURST); } catch (e) { MEDIA.discard(req); throw e; }
     req.allowSlowBody?.();   // a signed-in upload within its budget may take the half hour
     const r = await MEDIA.receive(user.id, req.mediaHash, req);
@@ -2101,6 +2362,7 @@ const mediaRoutes = {
     const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
     const body = await readBody(req);
+    if (wrongAccount(req, user)) return json(res, 409, ACCOUNT_MISMATCH);
     const hashes = body.hashes;
     if (!Array.isArray(hashes) || hashes.length > 1000 || !hashes.every(h => typeof h === 'string' && HASH_RE.test(h))) {
       throw new MediaError(400, 'bad-request', { error: 'hashes must be a list of at most 1000 lowercase sha256 hex strings' });
@@ -2119,6 +2381,20 @@ const mediaRoutes = {
     json(res, 200, { removed: r.removed, freedBytes: r.freedBytes, usage: await MEDIA.usage(user.id) });
   }
 };
+
+/* ---------- the community library (library/) ---------- */
+// Items people chose to share with everyone on this server, their files apart from uploads/,
+// and the blocklist (removed files plus every built-in catalogue file, by hash).
+const libStore = createLibraryStore({ dir: path.join(DATA, 'shared') });
+const library = libraryRoutes({
+  json, readBody, readSession, requireAdmin, isAdmin, audit, saveDb, origin: ORIGIN,
+  userById: id => db.users.find(u => u.id === id) || null,
+  perms, budgets, log: shareLog, media: MEDIA, store: libStore, cfg: LIBRARY, sendFile: sendMediaFile
+});
+if (LIBRARY.on && CONFIG.mode === 'file') {
+  const sweepShared = () => { try { const r = libStore.sweep({ graceDays: LIBRARY.graceDays }); if (r.removed) console.log(`library: swept ${r.removed} unshared file(s)`); } catch (e) { console.error('library: sweep failed', e.message); } };
+  setInterval(sweepShared, 3600000).unref();
+}
 
 /* ---------- routes ---------- */
 // A health check that only proves the port answers is the one that lies on the day it matters:
@@ -2150,6 +2426,194 @@ function dataWritable() {
   }
   dataProbe = { at: now, ok };
   return ok;
+}
+
+// The trainer feature's routes (docs/TRAINERS.md): roles and consent (trainers/routes.js) and the
+// dashboard on top of it (trainers/dashboard-routes.js), sharing one guard and one sharing log.
+const NUTRITION = nutritionSourceFrom(process.env);
+const trainerNotify = createNotify({ log: shareLog, sendPush: (uid, p) => sendPush(uid, p), langOf: uid => readStateCached(uid)?.lang || 'en' });
+const trainerRolesOf = uid => {
+  const r = org.rolesOf(uid);
+  return { trainer: r.freeTrainer || r.staff.some(x => x.role === 'trainer' && org.activeGym(x.gymId)), lead: r.staff.some(x => x.role === 'lead' && org.activeGym(x.gymId)) };
+};
+const trainerApi = trainerRoutes({
+  json, readBody, readSession, requireAdmin, isAdmin, audit, origin: ORIGIN,
+  userById: id => db.users.find(u => u.id === id) || null,
+  addressOf: req => limitAddress(req),
+  org, perms, log: shareLog, budgets, codeGuard, on: () => TRAINERS, notify: trainerNotify, nutrition: NUTRITION
+});
+// OIDC (#130): its own burst budget per address, and wrong states, tokens or codes count
+// toward the same address pause the other sign-in routes use.
+const OIDC_BURST = createWindow({ max: 30, windowMs: 60000 });
+setInterval(() => OIDC_BURST.sweep(), 60000).unref();
+// File mode only: oidc/routes.js reads and changes db.json's records in place and saves them.
+// It is handed those live records (not the identity store's copies) so that keeps working.
+const liveUser = u => (u && db.users.find(x => x.id === u.id)) || null;
+if (OIDC.enabled && CONFIG.mode === 'file') {
+  oidcApi = oidcRoutes({
+    cfg: OIDC, provider: createProvider(OIDC), secure: !!SECURE,
+    json, readBody, audit, auditFail, saveDb, publicUser, requireAdmin, stillSignedIn,
+    readSession: async req => liveUser(await readSession(req)),
+    sessionOf: async req => { const s = await sessionOf(req); return s && { ...s, user: liveUser(s.user) }; },
+    db: () => db, sessionCookie, makeSession, claimFirstAdmin, isAdmin, normalizeEmail,
+    // Synchronous, as oidc/routes.js needs it up to the push: the file identity store's rule, read directly.
+    nameTaken: n => db.users.some(o => claimsOf(o).has(nameKey(n))),
+    inviteOnly: INVITE_ONLY, proveOwner, otherWaysIn: u => db.creds.filter(c => c.userId === u.id).length + (passwordWayIn(u) ? 1 : 0),
+    cookieValues,
+    syncRoles: TRAINERS ? (uid, roles) => org.syncClaimRoles(uid, roles) : null,
+    throttle: req => { const a = limitAddress(req); return OIDC_BURST.take(a) || ADDR_FAILS.retryAfter('oidc|' + a); },
+    strike: req => strikeAddress(req, 'oidc')
+  });
+}
+// OIDC_ONLY: the provider is the way in. Passkeys and passwords still sign in an admin, so an
+// outage at the provider never locks the operator out of their own server.
+const oidcOnlyRefused = (res, user) => {
+  if (!OIDC.enabled || !OIDC.only || (user && isAdmin(user))) return false;
+  json(res, 403, { error: `sign in with ${OIDC.label} instead`, code: 'oidc-only' });
+  return true;
+};
+const OIDC_ONLY_SIGNUPS = new Set(['POST /api/register/options', 'POST /api/register/verify', 'POST /api/register/password']);
+// Offers to stay with a trainer privately run out after 30 days even if nobody opens the app.
+if (TRAINERS) { const offerSweep = setInterval(() => { try { org.expireOffers(); } catch (e) { console.error('org offers', e.message); } }, 3600000); offerSweep.unref?.(); }
+
+/* ---------- the MCP connector's OAuth (oauth.js) ---------- */
+const APP_BASE = String(process.env.BASE_PATH || '').replace(/\/+$/, '');
+const OAUTH_ORIGIN = ORIGIN.replace(/\/+$/, '') + APP_BASE;
+// The address people paste into Claude or ChatGPT; a `resource` parameter has to name it.
+const MCP_RESOURCE = OAUTH_ORIGIN + '/mcp';
+const oauthPending = new Map();
+const oauthCodes = new Map();
+// A form body, the way RFC 6749 sends the token request (JSON taken too), at most 16 KB.
+function readForm(req) {
+  return new Promise((resolve, reject) => {
+    let size = 0; const chunks = [];
+    req.on('data', d => { size += d.length; if (size > 16384) { reject(new HttpError(413, 'body too large')); req.destroy(); return; } chunks.push(d); });
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      if (/json/i.test(req.headers['content-type'] || '')) { try { const o = JSON.parse(raw || '{}'); return resolve(new URLSearchParams(Object.entries(o).map(([k, v]) => [k, String(v)]))); } catch { return resolve(new URLSearchParams()); } }
+      resolve(new URLSearchParams(raw));
+    });
+    req.on('error', reject);
+  });
+}
+const redirectTo = (res, location) => { res.writeHead(302, { Location: location, 'Cache-Control': 'no-store' }); res.end(); };
+const oauthJson = (res, status, body) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', Pragma: 'no-cache' }); res.end(JSON.stringify(body)); };
+const userById = uid => db.users.find(u => u.id === uid) || null;
+// A client metadata document (CIMD) comes from the public internet only: the integrations' outbound
+// rule, so a client_id pointing into the server's own network is never fetched.
+const CIMD_LOOKUP = outboundLookup();
+// Registering a client and starting a sign-in need no session: a budget per address, so nobody
+// can rewrite db.json in a loop, push a real person's waiting sign-in out of the 1000 kept, or
+// have the server fetch one client metadata document after another.
+const OAUTH_ANON = createWindow({ max: Math.max(1, +(process.env.OAUTH_ANON_PER_MIN || 30) || 30), windowMs: 60000 });
+setInterval(() => OAUTH_ANON.sweep(), 60000).unref();
+const oauthBudget = (req, res) => {
+  const wait = OAUTH_ANON.take(limitAddress(req));
+  if (wait) tooMany(res, wait);
+  return !wait;
+};
+/* Discovery under BASE_PATH (RFC 8414 / 9728 path insertion): /.well-known/<doc>/gym and
+   /.well-known/oauth-protected-resource/gym/mcp are the same documents as at the root. The web
+   container strips the prefix from /gym/.well-known/... itself. */
+function wellKnownPath(p) {
+  if (!APP_BASE || !p.startsWith('/.well-known/')) return p;
+  for (const doc of ['oauth-authorization-server', 'openid-configuration', 'oauth-protected-resource']) {
+    const at = '/.well-known/' + doc + APP_BASE;
+    if (p === at) return '/.well-known/' + doc;
+    if (p === at + '/mcp') return '/.well-known/' + doc + '/mcp';
+  }
+  return p;
+}
+function oauthRoutes() {
+  const meta = (req, res) => json(res, 200, oauth.authServerMetadata(OAUTH_ORIGIN));
+  const resource = (req, res) => json(res, 200, oauth.protectedResourceMetadata(OAUTH_ORIGIN));
+  return {
+    'GET /.well-known/oauth-authorization-server': meta,
+    // The OpenID name for the same document: the MCP spec's clients try it after RFC 8414, and
+    // under BASE_PATH it is the one address they look for below the prefix.
+    'GET /.well-known/openid-configuration': meta,
+    'GET /.well-known/oauth-protected-resource': resource,
+    'GET /.well-known/oauth-protected-resource/mcp': resource,
+    'POST /api/oauth/register': async (req, res) => {
+      if (!oauthBudget(req, res)) return;
+      const body = await readBody(req).catch(() => ({}));
+      const r = oauth.registerClient(db, body);
+      if (r.status === 201) saveDb();
+      json(res, r.status, r.body);
+    },
+    // The assistant sends the browser here; it goes on to the app's consent page (views/Connect.jsx).
+    'GET /api/oauth/authorize': async (req, res) => {
+      if (!oauthBudget(req, res)) return;
+      const q = new URL(req.url, 'http://x').searchParams;
+      const opts = { issuer: OAUTH_ORIGIN, resource: MCP_RESOURCE };
+      if (oauth.isCimdId(q.get('client_id'))) {
+        const c = await oauth.resolveCimd(q.get('client_id'), { lookup: CIMD_LOOKUP });
+        if (!c.ok) { res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end('openGym could not start this sign-in: ' + c.error); }
+        opts.client = c.client;
+      }
+      const r = oauth.startAuthorize(db, q, oauthPending, Date.now(), opts);
+      if (r.ok) return redirectTo(res, `${OAUTH_ORIGIN}/#/connect/${r.request.id}`);
+      if (r.redirect) return redirectTo(res, r.redirect);
+      res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end('openGym could not start this sign-in: ' + r.error);
+    },
+    'GET /api/oauth/request': async (req, res) => {
+      const user = await readSession(req);
+      if (!user) return json(res, 401, { error: 'not signed in' });
+      const d = oauth.describeRequest(oauthPending, new URL(req.url, 'http://x').searchParams.get('id') || '');
+      if (!d) return json(res, 404, { error: 'this sign-in has expired; start it again from the assistant', code: 'expired' });
+      json(res, 200, d);
+    },
+    'POST /api/oauth/approve': async (req, res) => {
+      const user = await readSession(req);
+      if (!user) return json(res, 401, { error: 'not signed in' });
+      const body = await readBody(req);
+      let made = null;
+      try {
+        const r = oauth.approve(oauthPending, oauthCodes, text(body.id), { scopes: body.scopes, days: body.days }, (name, scopes, days) => {
+          // At the token limit an earlier connection of an assistant makes room, the one used least
+          // recently: reconnecting Claude ten times must not end at a screen that cannot say yes.
+          made = createToken(db, user, { name, scopes, days, evict: row => !!row.connector });
+          return { value: made.token, scopes: made.row.scopes, expiresIn: made.row.exp ? Math.round((made.row.exp - Date.now()) / 1000) : null, row: made.row };
+        });
+        if (!r.ok) return json(res, r.status, { error: r.error, code: 'expired' });
+        saveDb();
+        audit(req, 'auth.token.create', { user, msg: made.row.name });
+        logToken(user.id, 'token.create', made.row);
+        json(res, 200, { redirect: r.redirect });
+      } catch (e) { if (e instanceof ScopeError) return json(res, e.status, { error: e.message, code: e.code }); throw e; }
+    },
+    'POST /api/oauth/deny': async (req, res) => {
+      const user = await readSession(req);
+      if (!user) return json(res, 401, { error: 'not signed in' });
+      const body = await readBody(req);
+      const r = oauth.deny(oauthPending, text(body.id));
+      if (!r.ok) return json(res, r.status, { error: r.error, code: 'expired' });
+      json(res, 200, { redirect: r.redirect });
+    },
+    'POST /api/oauth/token': async (req, res) => {
+      const form = await readForm(req);
+      if (!form.get('client_id')) { const id = oauth.basicClientId(req.headers.authorization); if (id) form.set('client_id', id); }
+      if (form.get('grant_type') === 'refresh_token') {
+        const r = oauth.refresh(db, form, userById);
+        if (r.changed) saveDb();
+        return oauthJson(res, r.status, r.body);
+      }
+      const r = oauth.exchange(oauthCodes, form, db);
+      if (r.status === 200) saveDb();
+      oauthJson(res, r.status, r.body);
+    },
+    // RFC 7009. Always 200, known token or not, so it says nothing about which ones exist.
+    'POST /api/oauth/revoke': async (req, res) => {
+      const form = await readForm(req);
+      const row = oauth.revocable(db, form.get('token') || '', v => findToken(db, v, userById));
+      if (row) {
+        for (const r of revokeTokens(db, row.userId, row.id)) logToken(row.userId, 'token.end', r);
+        saveDb();
+      }
+      res.writeHead(200, { 'Cache-Control': 'no-store' }); res.end();
+    }
+  };
 }
 
 const routes = {
@@ -2186,17 +2650,41 @@ const routes = {
     // holds was made for a session: without the key it cannot tell "no Coach here" from "you
     // were not signed in when you asked", and would re-ask on every sign-in on every instance
     // that has no Coach. The key's absence is that answer.
+    const me = await readSession(req);
+    // Product mode offers none of the db.json-backed extras (docs/dev/PILOT_ENDPOINT_MATRIX.md):
+    // their routes answer 404 there (productUnavailable), so the app is not told they exist.
+    const fileMode = CONFIG.mode === 'file';
     json(res, 200, {
       // Product mode: signup needs a code unless the operator opened it (PILOT_OPEN_SIGNUP).
       invite_only: INVITE_ONLY || (CONFIG.mode === 'product' && !PILOT_OPEN_SIGNUP), allow_guest: ALLOW_GUEST,
+      // Whether this request came with a session GET /api/me would accept (the same check). The
+      // cookie is HttpOnly, so the app cannot look for itself: a guest's every start asked
+      // /api/me only to be told 401, which browsers print in the console as an error. With a
+      // `false` here the app does not ask. /api/me itself answers 401 as it always did: paired
+      // phones, older apps and scripts read that status.
+      signed_in: !!me,
       // Only when on, so an instance without passwords answers exactly as it did before (#118).
       ...(PASSWORD_LOGIN ? { password_login: true } : {}),
+      // Scoped tokens (Settings → API tokens), and whether /mcp is served beside the app: for a
+      // signed-in profile only, which is who can make one, so a stranger's answer stays as it was.
+      ...(fileMode && API_TOKENS && me ? { api_tokens: true, ...(MCP_ON ? { mcp: true } : {}) } : {}),
+      // Public like the flags above: the sign-in screen draws its provider button from it.
+      ...(oidcApi ? { oidc: { label: OIDC.label, ...(OIDC.only ? { only: true } : {}) } } : {}),
       // Public: the sign-in screen is the first thing that reads it.
       ...(DEFAULT_LANG ? { default_lang: DEFAULT_LANG } : {}),
       // Public like the two flags above: the caps are not a secret, and the absence of the
       // block is how the app knows this server does not take photos and videos at all.
       ...(MEDIA_ON ? { media: mediaConfig(MEDIA_LIMITS) } : {}),
-      ...(CONFIG.mode === 'file' && await readSession(req) ? { coach: coachConfig.publicConfig() } : {})
+      ...(fileMode && me ? { coach: coachConfig.publicConfig() } : {}),
+      // The community library: only to a session and only with LIBRARY=on.
+      ...(fileMode && LIBRARY.on && me ? { shared: publicLibraryConfig(LIBRARY, currentConsent('library')) } : {}),
+      // Which integrations this server offers (only to a session, like the Coach block). Absent
+      // with INTEGRATIONS unset, which is how the app knows to show the server cards as off.
+      ...(fileMode && me && integrations.publicConfig() ? { integrations: integrations.publicConfig() } : {}),
+      // Trainers and studios (docs/TRAINERS.md): only to a session and only when on, so the app
+      // shows no trace of the feature anywhere else.
+      // `roles` decides whether the app shows the trainer dashboard; every route checks again anyway.
+      ...(fileMode && TRAINERS && me ? { trainers: { on: true, leadAccess: org.leadMode, roles: trainerRolesOf(me.id) } } : {})
     });
   },
 
@@ -2258,7 +2746,7 @@ const routes = {
     } catch (e) {
       // e.message can echo attacker-supplied response fields, so only the reason code is kept.
       auditFail(req, 'auth.register.fail', { ok: false, name: c.name, msg: 'verify-error' });
-      return json(res, 400, { error: verifyError(e, { rpId: RP_ID, origin: ORIGIN }) });
+      return json(res, 400, verifyAnswer(e));
     }
     if (!verification.verified) {
       auditFail(req, 'auth.register.fail', { ok: false, name: c.name, msg: 'not-verified' });
@@ -2344,7 +2832,7 @@ const routes = {
       });
     } catch (e) {
       auditFail(req, 'auth.login.fail', { ok: false, user: await IDENTITY.getUser(cred.userId), uid: cred.userId, msg: 'verify-error' });
-      return json(res, 400, { error: verifyError(e, { rpId: RP_ID, origin: ORIGIN }) });
+      return json(res, 400, verifyAnswer(e));
     }
     if (!verification.verified) {
       auditFail(req, 'auth.login.fail', { ok: false, user: await IDENTITY.getUser(cred.userId), uid: cred.userId, msg: 'not-verified' });
@@ -2360,6 +2848,7 @@ const routes = {
       audit(req, 'auth.login.fail', { ok: false, user, msg: 'account-disabled' });
       return json(res, 403, { error: 'this account has been disabled', code: 'disabled' });
     }
+    if (oidcOnlyRefused(res, user)) return audit(req, 'auth.login.fail', { ok: false, user, msg: 'oidc-only' });
     audit(req, 'auth.login.ok', { user });
     json(res, 200, { user: publicUser(user) }, { 'Set-Cookie': sessionCookie(user) });
   },
@@ -2369,7 +2858,9 @@ const routes = {
   'POST /api/logout': async (req, res) => {
     const user = await readSession(req);
     if (user) audit(req, 'auth.logout', { user });
-    json(res, 200, { ok: true }, { 'Set-Cookie': clearCookie });
+    // OIDC_LOGOUT: where the browser goes next to end the provider's session too.
+    const out = user && oidcApi ? oidcApi.logoutUrl(user) : null;
+    json(res, 200, { ok: true, ...(out ? { provider_logout: out } : {}) }, { 'Set-Cookie': clearCookie });
   },
 
   // "Sign out everywhere" — bumps this user's session version, which invalidates every cookie
@@ -2383,6 +2874,10 @@ const routes = {
     // An unredeemed pairing code is a session-in-waiting for this account; it goes too, and so
     // does an unused device link.
     await dropWaysIn(user.id);
+    oidcApi?.forget(user.id);
+    // Every scoped token ends with the sessions (its version would stop matching anyway); gone
+    // from the list too, so Settings shows what still works.
+    for (const r of revokeTokens(db, user.id)) logToken(user.id, 'token.end', r);
     saveDb();
     audit(req, 'auth.logout.all', { user });
     json(res, 200, { ok: true }, { 'Set-Cookie': clearCookie });
@@ -2430,14 +2925,24 @@ const routes = {
   },
 
   // Mobile app pairing: called from an already signed-in browser tab (Settings → "Pair the
-  // mobile app") to mint a short code the phone can redeem below.
+  // mobile app") to mint a short code the phone can redeem below. The code turns into a phone's
+  // token, which /api/me renews for as long as it is used and which gets the device pass on the
+  // account's own delete, so it asks the proof a device link asks (proveOwner): a session alone
+  // may be a cookie someone walked off with, and minting a phone token is how that cookie would
+  // stop having to expire.
   'POST /api/pair/create': async (req, res) => {
     const user = await readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
+    const body = await readBody(req);
+    const proof = await proveOwner(req, res, user, body, 'pair');
+    if (!proof) return;
+    // Awaited: a sign-out everywhere, a disable or an admin reset may have ended this session.
+    if (!(await stillSignedIn(req, user))) return json(res, 401, { error: 'not signed in' });
+    if (proof === 'passkey') saveDb();   // the confirming passkey's counter and last use
     // One live code per profile: the newest is the one on screen. Keeping every code minted
     // let one session grow the store without limit for five minutes at a time.
     const code = await TRANSIENT.createPairing(user.id);
-    audit(req, 'auth.pair.create', { user });
+    audit(req, 'auth.pair.create', { user, msg: proof });
     json(res, 200, { code });
   },
 
@@ -2460,11 +2965,267 @@ const routes = {
     json(res, 200, { token: makeSession(user), user: publicUser(user) });
   },
 
+  // The watch relay (watch-relay.js, docs/ZEPP_OS.md). A signed-in device asks for a code, the
+  // Zepp app's settings page for openGym redeems it for a watch token, and from then on the page
+  // and the watch's Side Service meet in this profile's mailbox. A watch token opens the two
+  // /api/watch/box routes and nothing else, so a session is all that minting one asks; "sign out
+  // everywhere" and a new password end every watch link with the sessions (their version).
+  'POST /api/watch/pair': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const { code, exp } = createWatchCode(watchCodes, user.id);
+    audit(req, 'auth.watch.pair', { user });
+    json(res, 200, { code, exp });
+  },
+  'POST /api/watch/redeem': async (req, res) => {
+    const body = await readBody(req);
+    if (addressPaused(req, res, 'watch')) return;
+    const uid = takeWatchCode(watchCodes, text(body.code));
+    const user = uid && db.users.find(u => u.id === uid);
+    if (!user || user.disabled) {
+      strikeAddress(req, 'watch');
+      auditFail(req, 'auth.watch.fail', { ok: false, msg: 'code-invalid' });
+      return json(res, 400, { error: 'invalid or expired code', code: 'pair-invalid' });
+    }
+    const { token, link } = createWatchLink(db, user.id, sessionVersion(user), text(body.name));
+    saveDb();
+    audit(req, 'auth.watch.ok', { user, msg: link.name });
+    json(res, 200, { token, id: link.id, name: user.name || '' });
+  },
+  'GET /api/watch/links': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    json(res, 200, { links: listWatchLinks(db, user.id) });
+  },
+  'POST /api/watch/unlink': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const body = await readBody(req);
+    const id = text(body.id) || null;
+    if (dropWatchLinks(db, user.id, id)) saveDb();
+    // The last watch gone: nothing is left to read the mailbox.
+    if (!listWatchLinks(db, user.id).length) { try { fs.unlinkSync(watchFile(user.id)); } catch { /* none */ } }
+    audit(req, 'auth.watch.unlink', { user });
+    json(res, 200, { ok: true, links: listWatchLinks(db, user.id) });
+  },
+  // The page's side: its snapshot for the watches, and what they sent.
+  'PUT /api/watch/snapshot': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const body = await readBody(req);
+    if (!listWatchLinks(db, user.id).length) return json(res, 409, { error: 'no watch paired', code: 'no-watch' });
+    const box = readBox(user.id);
+    if (!putSnapshot(box, body.json)) return json(res, 400, { error: 'not a snapshot' });
+    writeBox(user.id, box);
+    json(res, 200, { ok: true });
+  },
+  'GET /api/watch/events': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const links = listWatchLinks(db, user.id);
+    const seen = links.reduce((m, l) => Math.max(m, l.seen || 0), 0);
+    json(res, 200, { events: links.length ? queuedEvents(readBox(user.id)) : [], paired: links.length, seen });
+  },
+  'POST /api/watch/ack': async (req, res) => {
+    const user = await readSession(req);
+    if (!user) return json(res, 401, { error: 'not signed in' });
+    const body = await readBody(req);
+    const box = readBox(user.id);
+    if (ackEvents(box, body.ids)) writeBox(user.id, box);
+    json(res, 200, { ok: true });
+  },
+  // The watch's side (its Side Service, with the watch token): the snapshot, and its events.
+  'GET /api/watch/box': async (req, res) => {
+    const link = watchLinkFor(req);
+    if (!link) return json(res, 401, { error: 'not paired', code: 'watch-unpaired' });
+    const box = readBox(link.userId);
+    json(res, 200, { json: box.snapshot, at: box.snapAt });
+  },
+  'POST /api/watch/box': async (req, res) => {
+    const link = watchLinkFor(req);
+    if (!link) return json(res, 401, { error: 'not paired', code: 'watch-unpaired' });
+    const body = await readBody(req);
+    const box = readBox(link.userId);
+    const accepted = pushEvents(box, body.events);
+    if (accepted.length) writeBox(link.userId, box);
+    json(res, 200, { accepted, json: box.snapshot, at: box.snapAt });
+  },
+
+  /* ---------- scoped tokens (tokens.js, docs/API_TOKENS.md) ---------- */
+  // Made and revoked by the profile itself, in Settings, with a session. The token is shown once.
+  // A token never reaches these three: they are session routes, and readSession() does not know
+  // a token.
+  ...(API_TOKENS ? {
+    'GET /api/tokens': async (req, res) => {
+      const user = await readSession(req);
+      if (!user) return json(res, 401, { error: 'not signed in' });
+      json(res, 200, { tokens: listTokens(db, user), categories: TOKEN_CATEGORIES, days: TOKEN_DAYS, defaultDays: DEFAULT_DAYS, mcp: MCP_ON });
+    },
+    'POST /api/tokens': async (req, res) => {
+      const user = await readSession(req);
+      if (!user) return json(res, 401, { error: 'not signed in' });
+      const body = await readBody(req);
+      let made;
+      try { made = createToken(db, user, { name: text(body.name), scopes: body.scopes, days: body.days }); }
+      catch (e) { if (e instanceof ScopeError) return json(res, e.status, { error: e.message, code: e.code }); throw e; }
+      saveDb();
+      audit(req, 'auth.token.create', { user, msg: made.row.name });
+      logToken(user.id, 'token.create', made.row);
+      json(res, 200, { token: made.token, tokens: listTokens(db, user), id: made.row.id });
+    },
+    'POST /api/tokens/revoke': async (req, res) => {
+      const user = await readSession(req);
+      if (!user) return json(res, 401, { error: 'not signed in' });
+      const body = await readBody(req);
+      const gone = revokeTokens(db, user.id, text(body.id) || null);
+      if (gone.length) {
+        saveDb();
+        audit(req, 'auth.token.revoke', { user, msg: gone.length === 1 ? gone[0].name : `${gone.length} tokens` });
+        for (const r of gone) logToken(user.id, 'token.end', r);
+      }
+      json(res, 200, { ok: true, revoked: gone.length, tokens: listTokens(db, user) });
+    },
+
+    // MCP connector sign-in for Claude, ChatGPT and other assistants (oauth.js): only with the mcp
+    // container on. What it hands out is an ordinary scoped token, made on the consent screen.
+    ...(MCP_ON ? oauthRoutes() : {}),
+
+    // The calendar feed (Settings → Integrations → Calendar feed). Session routes, like the token list.
+    'GET /api/calendar': async (req, res) => {
+      const user = await readSession(req);
+      if (!user) return json(res, 401, { error: 'not signed in' });
+      json(res, 200, calView(user));
+    },
+    // { done: bool } with the feed on changes what it shows and keeps the address; `renew: true`
+    // (or no feed yet) makes a new address and ends the old.
+    'POST /api/calendar': async (req, res) => {
+      const user = await readSession(req);
+      if (!user) return json(res, 401, { error: 'not signed in' });
+      const body = await readBody(req);
+      const done = body.done === true;
+      const scopes = { plans: 'view', workouts: done ? 'view' : 'off' };
+      const cur = calRow(user.id);
+      if (cur && cur.sv === (user.sv || 0) && body.renew !== true) {
+        cur.scopes = { ...cur.scopes, ...scopes };
+        saveDb();
+        return json(res, 200, calView(user));
+      }
+      if (!CAL_KEY) return json(res, 503, { error: 'the server secret is missing' });
+      const gone = (db.apiTokens || []).filter(r => r && r.userId === user.id && r.kind === 'calendar').flatMap(r => revokeTokens(db, user.id, r.id));
+      let made;
+      try { made = createToken(db, user, { name: 'Calendar feed', scopes, days: 0, kind: 'calendar' }); }
+      catch (e) { if (e instanceof ScopeError) return json(res, e.status, { error: e.message, code: e.code }); throw e; }
+      made.row.seal = sealText(CAL_KEY, made.token, 'calendar:' + made.row.id);
+      saveDb();
+      audit(req, 'auth.token.create', { user, msg: made.row.name });
+      for (const r of gone) logToken(user.id, 'token.end', r);
+      logToken(user.id, 'token.create', made.row);
+      json(res, 200, calView(user));
+    },
+    'POST /api/calendar/revoke': async (req, res) => {
+      const user = await readSession(req);
+      if (!user) return json(res, 401, { error: 'not signed in' });
+      const r = calRow(user.id);
+      const gone = r ? revokeTokens(db, user.id, r.id) : [];
+      if (gone.length) {
+        saveDb();
+        audit(req, 'auth.token.revoke', { user, msg: gone[0].name });
+        logToken(user.id, 'token.end', gone[0]);
+      }
+      json(res, 200, { on: false });
+    },
+    // The feed itself, for a calendar app: no cookie, no header, the token in the path.
+    'GET /api/calendar/{token}.ics': async (req, res) => {
+      const row = findToken(db, req.calToken, uid => db.users.find(u => u.id === uid) || null);
+      if (!row || row.kind !== 'calendar') {
+        auditFail(req, 'auth.token.fail', { ok: false, msg: 'token-invalid' });
+        return json(res, 404, { error: 'not found' });
+      }
+      const wait = TOKEN_READS.take(row.id);
+      if (wait) return tooMany(res, wait);
+      if (touchToken(row)) saveDb();
+      const user = db.users.find(u => u.id === row.userId);
+      const state = await readStateOr503(res, user.id);
+      if (state === undefined) return;
+      const ics = buildIcs(state ? scopedState(state, row.scopes) : {}, { uid: user.id, done: row.scopes?.workouts === 'view', tz: state?.reminder?.tz, name: user.name || '' });
+      res.writeHead(200, { 'Content-Type': 'text/calendar; charset=utf-8', 'Cache-Control': 'private, max-age=900', 'Content-Disposition': 'inline; filename="opengym.ics"', 'X-Content-Type-Options': 'nosniff' });
+      res.end(ics);
+    },
+
+    // The token's side. Whose profile, and what it may do.
+    'GET /api/token/me': async (req, res) => {
+      const t = tokenAuth(req, res); if (!t) return;
+      json(res, 200, { user: { id: t.user.id, name: t.user.name || '' }, token: { id: t.row.id, name: t.row.name, scopes: { ...t.row.scopes }, exp: t.row.exp || null } });
+    },
+    // The part of the document the token may read (tokens.js scopedState), with the revision to
+    // write back over.
+    'GET /api/token/data': async (req, res) => {
+      const t = tokenAuth(req, res); if (!t) return;
+      const state = await readStateOr503(res, t.user.id);
+      if (state === undefined) return;
+      noteTokenRead(t);
+      json(res, 200, { state: state ? scopedState(state, t.row.scopes) : null, rev: state?._rev || 0, ...(state?._wid ? { wid: state._wid } : {}) });
+    },
+    'GET /api/token/data/rev': async (req, res) => {
+      const t = tokenAuth(req, res); if (!t) return;
+      const doc = readStateCached(t.user.id);
+      json(res, 200, { rev: doc?._rev || 0, ...(doc?._wid ? { wid: doc._wid } : {}) });
+    },
+    // A write: the keys the token may change, over the exact revision it read (no blind writes,
+    // a 409 carries the current scoped document). Everything else in the profile stays as stored,
+    // and the write is stamped like any other writer's that does not stamp (sync-stamps.js).
+    'PUT /api/token/data': async (req, res) => {
+      const t = tokenAuth(req, res); if (!t) return;
+      const body = await readBody(req);
+      if (!body.state || typeof body.state !== 'object' || Array.isArray(body.state)) return json(res, 400, { error: 'state required' });
+      if (!Number.isInteger(body.baseRev)) return json(res, 400, { error: 'baseRev required: write over the revision you read', code: 'base-rev' });
+      // Every check against the stored document runs inside the write, under the store's
+      // per-profile serialisation: nothing can land between the compare and the write.
+      let merged = null, denied = false, done;
+      try {
+        done = await commitState(t.user.id, cur => {
+          if (!cur) return { status: 409, body: { error: 'this profile has not synced from a device yet', code: 'not-synced' } };
+          const curRev = cur._rev || 0;
+          const wid = cur._wid ? { wid: cur._wid } : {};
+          if (body.baseRev !== curRev || (typeof body.baseWid === 'string' && cur._wid && body.baseWid !== cur._wid)) {
+            return { status: 409, body: { error: 'conflict', rev: curRev, state: scopedState(cur, t.row.scopes), ...wid } };
+          }
+          try { merged = mergeScoped(cur, body.state, t.row.scopes); }
+          catch (e) {
+            if (e instanceof ScopeError) { denied = true; return { status: e.status, body: { error: e.message, code: e.code } }; }
+            throw e;
+          }
+          if (!merged.touched.length) return { status: 200, body: { ok: true, unchanged: true, rev: curRev, ...wid } };
+          const next = merged.next;
+          const list = v => v == null || Array.isArray(v);
+          if (!list(next.workouts) || !list(next.routines)) return { status: 400, body: { error: 'invalid state' } };
+          const wait = TOKEN_WRITES.take(t.row.id);
+          if (wait) return { wait };
+          // The writer read the current revision: prepareWrite's over-read write, unstamped.
+          return { state: next, baseRev: curRev, stamped: false };
+        });
+      } catch (e) {
+        if (!(e instanceof StateUnreadableError)) throw e;
+        console.error('state file unreadable for', t.user.id); return json(res, 503, { error: 'state unreadable' });
+      }
+      if (done.wait) return tooMany(res, done.wait);
+      if (denied) auditFail(req, 'token.denied', { ok: false, user: t.user, msg: t.row.name });
+      if (typeof done.text === 'string') {
+        audit(req, 'token.write', { user: t.user, msg: `${t.row.name}: ${merged.touched.join(', ')}` });
+        for (const cat of merged.touched) {
+          try { shareLog.append(t.user.id, { ev: 'token.write', actor: tokenActor(t.row), cat }); } catch (e) { console.error('share log', e.message); }
+        }
+      }
+      json(res, done.status, done.body);
+    },
+  } : {}),
+
   // Absent entirely while PASSWORD_LOGIN is off, so each of them is a plain 404.
   ...(PASSWORD_LOGIN ? passwordRoutes : {}),
 
   // Always there: more passkeys and device links need nothing an instance has to switch on.
   ...passkeyRoutes,
+  ...(oidcApi ? oidcApi.routes : {}),
 
   // `rev` is the server's own count of writes to this profile (also stored inside the document as
   // `_rev`, so every other reader of the file — reminder tick, admin, Coach, MCP — is unaffected).
@@ -2528,10 +3289,9 @@ const routes = {
     if (invalid) return json(res, invalid.status, invalid.body);
     // The compare-and-write runs under the store's per-profile write serialisation, and the
     // answer goes out only once the store has persisted the document.
-    let prepared;
+    let done;
     try {
-      prepared = await STATE.updateMemberState(user.id, cur =>
-        prepareWrite(cur, body, { nextWriteId: () => crypto.randomBytes(8).toString('hex') }));
+      done = await commitState(user.id, () => body);
     } catch (e) {
       // Text the database cannot hold (PostgreSQL JSONB refuses an embedded NUL): refused rather
       // than silently altered, and nothing stored.
@@ -2539,15 +3299,7 @@ const routes = {
       if (!(e instanceof StateUnreadableError)) throw e;
       console.error('state file unreadable for', user.id); return json(res, 503, { error: 'state unreadable' });
     }
-    if (prepared.status !== 200) return json(res, prepared.status, prepared.body);
-    // Starts (or stops) the grace clock of every stored file this write stopped (or started)
-    // referencing. Bookkeeping only: the state is already saved, so nothing here may turn a
-    // successful write into an error.
-    if (MEDIA_ON) {
-      // Product mode answers with a promise (platform/uploads.js); its failure is logged the same way.
-      try { MEDIA.noteState(user.id, prepared.state)?.catch?.(e => console.error('media noteState', e)); } catch (e) { console.error('media noteState', e); }
-    }
-    json(res, 200, prepared.body);
+    json(res, done.status, done.body);
   },
 
   'GET /api/push/public-key': async (req, res) => json(res, 200, { key: vapid.publicKey }),
@@ -2558,7 +3310,7 @@ const routes = {
     const body = await readBody(req);
     const sub = body.subscription;
     if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) return json(res, 400, { error: 'invalid subscription' });
-    const bad = pushEndpointError(sub.endpoint);
+    const bad = pushEndpointError(sub.endpoint) || pushKeyError(sub.keys.p256dh) || pushKeyError(sub.keys.auth);
     if (bad) return json(res, 400, { error: bad });
     // Only the two keys the push protocol needs are kept: `sub` is caller-supplied and would
     // otherwise put arbitrary fields into db.json, which every admin route reads back out.
@@ -2641,7 +3393,7 @@ const routes = {
     const n = typeof raw === 'number' || typeof raw === 'string' ? Number(raw) : NaN;
     if (!(n >= 1)) return json(res, 400, { error: 'seconds required' });
     const sec = Math.min(3600, Math.round(n));
-    scheduleRestTimer(user.id, deviceIdOf(body.deviceId), sec, (await reminderState(user.id))?.lang);
+    scheduleRestTimer(user.id, deviceIdOf(body.deviceId), sec, (await reminderState(user.id))?.lang, typeof body.next === 'string' ? body.next : null);
     json(res, 200, { ok: true });
   },
 
@@ -2678,51 +3430,104 @@ const routes = {
   },
 
   /* ---------- admin dashboard ---------- */
-  // One row per user, cheap enough for a personal instance (reads each state file once).
+  // One row per user, cheap enough for a personal instance (stateSummary reads a file only when it
+  // changed). Operational numbers only: how much is there, when it last synced, whether pushes
+  // work. With ADMIN_DATA_VIEW on it also says when each person last trained and what they are
+  // training right now, as it did before 1.4.5, and that look is in the activity log.
   'GET /api/admin/users': async (req, res) => {
-    if (!await requireAdmin(req, res)) return;
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    const view = ADMIN_DATA_VIEW;
     const users = db.users.map(u => {
       const S = readState(u.id) || {};
       const workouts = records(S.workouts);
       const last = workouts[workouts.length - 1];
+      const live = livePresence(u.id);
       return {
         id: u.id, name: u.name, created: u.created || null,
         disabled: !!u.disabled, admin: isAdmin(u), owner: isOwner(u), invitedBy: u.invitedBy || null,
         workouts: workouts.length,
-        lastWorkout: last ? last.d : null,
+        ...(view ? { lastWorkout: last ? last.d : null } : {}),
         lastSync: lastSyncOf(u, S),
         hasPush: db.subs.some(s => s.userId === u.id),
-        live: livePresence(u.id),
+        // Training right now is a fact about the server's load; which routine and how far along is theirs.
+        live: live ? (view ? live : { startedAt: live.startedAt }) : null,
         // The sign-in e-mail is an admin's to see (to hand out a reset code, to tell two
         // profiles apart), and only while the instance takes passwords at all.
         ...(PASSWORD_LOGIN ? { password: hasPassword(u), email: u.email || null } : {})
       };
     });
-    json(res, 200, { users, invite_only: INVITE_ONLY, ...(PASSWORD_LOGIN ? { password_login: true } : {}), now: Date.now() });
+    if (view) audit(req, 'admin.data-view', { user: admin, msg: 'user list' });
+    json(res, 200, { users, invite_only: INVITE_ONLY, data_view: view, ...(TRAINERS ? { trainers: true } : {}), ...(PASSWORD_LOGIN ? { password_login: true } : {}), now: Date.now() });
   },
 
-  // Drill-down: full workout history + body-weight log for one user.
+  // Drill-down for one user. Without ADMIN_DATA_VIEW: counts, storage and roles, never a workout
+  // or a weigh-in. With it: the full workout history and body-weight log as before 1.4.5, and the
+  // look is written to the activity log and to the member's own sharing log.
   'GET /api/admin/user': async (req, res) => {
-    if (!await requireAdmin(req, res)) return;
+    const admin = await requireAdmin(req, res); if (!admin) return;
     const id = new URL(req.url, 'http://x').searchParams.get('id');
     const u = db.users.find(x => x.id === id);
     if (!u) return json(res, 404, { error: 'no such user' });
     const S = readState(u.id) || {};
-    json(res, 200, {
+    let bytes = 0;
+    try { bytes = fs.statSync(stateFile(u.id)).size; } catch { /* no state yet */ }
+    const base = {
       user: {
         id: u.id, name: u.name, created: u.created || null, disabled: !!u.disabled, admin: isAdmin(u), owner: isOwner(u), invitedBy: u.invitedBy || null,
         // Only on an instance with password sign-in: whether they have one, and until when an
         // unused reset code is good.
-        ...(PASSWORD_LOGIN ? { password: hasPassword(u), email: u.email || null, resetUntil: u.pwReset?.exp > Date.now() ? u.pwReset.exp : null } : {})
+        ...(PASSWORD_LOGIN ? { password: hasPassword(u), email: u.email || null, resetUntil: u.pwReset?.exp > Date.now() ? u.pwReset.exp : null } : {}),
+        // Until when an unused recovery code is good (#584), on every instance.
+        recoveryUntil: recoveryLinkOf(db, u.id)?.exp || null
       },
       unit: S.unit || 'kg',
       lastSync: lastSyncOf(u, S),
+      hasPush: db.subs.some(s => s.userId === u.id),
+      bytes,
+      counts: {
+        workouts: records(S.workouts).length, bodyweight: records(S.bodyweight).length,
+        measurements: records(S.measurements).length, routines: records(S.routines).length
+      },
+      ...(TRAINERS ? { roles: org.rolesOf(u.id), grants: org.get().grants.filter(g => g.memberId === u.id && g.status === 'active').length } : {}),
+      data_view: false
+    };
+    const may = perms.can(admin, 'admin:data-view', { memberId: u.id });
+    if (!may.ok) return json(res, 200, base);
+    const wait = budgets.take('data.admin', admin.id);
+    if (wait) return json(res, 429, { error: 'slow down a little', code: 'rate-limited', retryAfter: wait }, { 'Retry-After': String(wait) });
+    audit(req, 'admin.data-view', { user: admin, target: u });
+    if (u.id !== admin.id) {
+      try { shareLog.append(u.id, { ev: 'data.admin-view', actor: { kind: 'admin', id: admin.id, name: admin.name } }); }
+      catch (e) { console.error('share log', e.message); }
+    }
+    json(res, 200, {
+      ...base,
+      data_view: true,
       routines: records(S.routines).map(r => ({ id: r.id, name: r.name, emoji: r.emoji, count: records(r.ex).length })),
       bodyweight: records(S.bodyweight),
       // records() already copied, so this reverse is ours: newest first for display. A workout's
       // photos and videos are the owner's own: the admin view gets no refs to them.
       workouts: records(S.workouts).reverse().map(({ media, ...w }) => w)
     });
+  },
+
+  // A recovery code (#584): for someone who lost every way in, on any instance, password sign-in
+  // or not. The person enters it on the sign-in screen, and the device they use gets a new passkey
+  // for the profile (POST /api/device-link/*, the same redemption a device link has). Who may make
+  // one for whom: any admin for a profile that is not an admin; the owner for an admin; nobody here
+  // for the owner, who uses the server's own command (recover.js), since no one else may take over
+  // the owner's login. Not for oneself, and not for a disabled profile. See issueRecovery.
+  'POST /api/admin/user/recovery': async (req, res) => {
+    const admin = await requireAdmin(req, res); if (!admin) return;
+    const body = await readBody(req);
+    const u = db.users.find(x => x.id === body.id);
+    if (!u) return json(res, 404, { error: 'no such user' });
+    if (u.id === admin.id) return json(res, 400, { error: 'you are signed in: add a passkey in Settings instead', code: 'self' });
+    if (isOwner(u)) return json(res, 403, { error: 'the owner recovers with the server command (recover.js)', code: 'owner' });
+    if (isAdmin(u) && !isOwner(admin)) { audit(req, 'admin.denied', { ok: false, user: admin, target: u, msg: 'recovery' }); return json(res, 403, { error: 'only the owner can make a recovery code for an admin' }); }
+    if (u.disabled) return json(res, 400, { error: 'enable the account first', code: 'disabled' });
+    const { code, link } = await issueRecovery(req, u, admin);
+    json(res, 200, { ok: true, name: u.name, code, expires: link.exp });
   },
 
   'POST /api/admin/user/disable': async (req, res) => {
@@ -2875,6 +3680,26 @@ const routes = {
   // a cycle. Every one of them is inert while the feature is unconfigured.
   ...coachRoutes({ json, readBody, readSession, requireAdmin }),
 
+  /* ---------- integrations ---------- */
+  // integrations/routes.js, handed the same helpers. With INTEGRATIONS unset they answer an empty
+  // list (GET) or 404 "off", so the routes exist on every server and the app can tell.
+  ...integrationRoutes({ json, readBody, readSession, hub: integrations, audit, origin: ORIGIN }),
+
+  /* ---------- trainers, gym leads, studios ---------- */
+  // trainers/routes.js. Every decision about another profile is permissions.js; with TRAINERS
+  // off the routes answer 404 'trainers-off'.
+  ...trainerApi.routes,
+  ...dashboardRoutes({
+    json, readBody, audit, origin: ORIGIN, userById: id => db.users.find(u => u.id === id) || null,
+    org, perms, log: shareLog, budgets, notify: trainerNotify, nutrition: NUTRITION, helpers: trainerApi.helpers,
+    state: { read: uid => readStateCached(uid), write: writeStateAs },
+    media: MEDIA_ON ? { file: (uid, hash) => MEDIA.file(uid, hash), send: sendMediaFile } : null
+  }),
+
+  /* ---------- the community library ---------- */
+  // library/routes.js and library/moderation.js; with LIBRARY off they answer 404 'sharing-off'.
+  ...library.routes,
+
   /* ---------- photos & videos ---------- */
   // Absent, not refusing, when MEDIA_UPLOADS=0: a 404 is what a server from before the feature
   // answers, and the client already treats that as "this server does not store them".
@@ -2896,8 +3721,9 @@ coachJobs.setProposalHook((uid, pending) => {
     tag: 'coach-proposal', url: '#/coach'
   });
 });
-// The Coach reads state files and db.json directly; product mode does not offer it.
+// The Coach and integrations read state files and db.json directly; product mode does not offer them.
 if (CONFIG.mode === 'file') {
+  integrations.start();
   startCadence({ users: () => db.users.filter(u => !u.disabled), userNow, skip: uid => !stateSummary(uid)?.consent });
   startWarmup();
 }
@@ -2944,10 +3770,18 @@ async function refuseSignup(req, res, invite) {
   json(res, 403, { error: 'joining needs a code from your gym or trainer', code: 'invite' });
   return true;
 }
+// Upstream surfaces whose data lives in db.json or other DATA_DIR files product mode does not keep
+// (docs/plans/2026-11-26-adopt-upstream-trainers.md step 2): the watch relay, scoped tokens and
+// the MCP connector's OAuth, the calendar feed, the community library, integrations, and, until
+// they run on the PostgreSQL seam (step 3), trainers and sharing.
+const PRODUCT_CLOSED = ['/api/coach', '/api/oidc', '/api/watch', '/api/tokens', '/api/token', '/api/oauth', '/api/calendar',
+  '/api/shared', '/api/integrations', '/api/sharing', '/api/trainer', '/api/gym'];
 const productUnavailable = key => {
   const path = key.slice(key.indexOf(' ') + 1);
   if (path.startsWith('/api/admin/')) return path !== '/api/admin/user/password-reset';
-  return path.startsWith('/api/coach/') || path === '/api/coach' || (!OBJECTS && (path.startsWith('/api/media/') || path === '/api/media'));
+  if (path.startsWith('/.well-known/')) return true;
+  if (PRODUCT_CLOSED.some(p => path === p || path.startsWith(p + '/'))) return true;
+  return !OBJECTS && (path.startsWith('/api/media/') || path === '/api/media');
 };
 const server = http.createServer(async (req, res) => {
   bodyDeadline(req);
@@ -2965,10 +3799,12 @@ const server = http.createServer(async (req, res) => {
     const pna = String(req.headers['access-control-request-private-network'] || '').toLowerCase() === 'true'
       && APP_ORIGINS.has(origin);
     res.writeHead(204, {
-      'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
+      'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
       // The CF-Access-* pair: a phone's Cloudflare Access service token (frontend lib/cf-access.js),
       // for an Access application that passes OPTIONS through to the origin.
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization, CF-Access-Client-Id, CF-Access-Client-Secret',
+      // X-OpenGym-Account: the account a media upload is meant for (GHSA-699c-6p5r-q574).
+      // PATCH and If-Match: a new version of a shared item (library/routes.js).
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, CF-Access-Client-Id, CF-Access-Client-Secret, X-OpenGym-Account, If-Match',
       'Access-Control-Max-Age': '86400',
       ...(pna ? { 'Access-Control-Allow-Private-Network': 'true' } : {})
     });
@@ -2985,17 +3821,27 @@ const server = http.createServer(async (req, res) => {
   // keys on the path could be stepped around the same way. No client sends such a path.
   const sent = req.url.split('?')[0];
   if (sent.startsWith('/') && sent !== url.pathname) return json(res, 400, { error: 'bad request' });
-  let key = req.method + ' ' + url.pathname;
+  let key = req.method + ' ' + (MCP_ON ? wellKnownPath(url.pathname) : url.pathname);
   // The one route with a parameter in its path. Mapped onto its template key here so the table
   // above stays a plain lookup, and so csrfOk and the catch-all see one name for every file.
   const mm = /^\/api\/media\/([0-9a-f]{64})$/.exec(url.pathname);
   if (mm) { key = req.method + ' /api/media/{hash}'; req.mediaHash = mm[1]; }
+  // The library's templates, the same way: an item id, a shared file, a person to ban.
+  const lm = /^\/api\/shared\/media\/([0-9a-f]{64})$/.exec(url.pathname);
+  if (lm) { key = req.method + ' /api/shared/media/{hash}'; req.mediaHash = lm[1]; }
+  const li = /^\/api\/(admin\/)?shared\/(s_[a-z2-7]{16})(\/import|\/report)?$/.exec(url.pathname);
+  if (li && !(li[1] && li[3])) { key = `${req.method} /api/${li[1] || ''}shared/{id}${li[3] || ''}`; req.itemId = li[2]; }
+  const lc = /^\/api\/calendar\/(ogt_[A-Za-z0-9_-]{43})\.ics$/.exec(url.pathname);
+  if (lc) { key = req.method + ' /api/calendar/{token}.ics'; req.calToken = lc[1]; }
+  const lu = /^\/api\/admin\/users\/([A-Za-z0-9_-]{1,64})\/sharing$/.exec(url.pathname);
+  if (lu) { key = req.method + ' /api/admin/users/{uid}/sharing'; req.targetUid = lu[1]; }
   // Upstream surfaces the shared pilot does not offer (docs/dev/PILOT_ENDPOINT_MATRIX.md): an
   // intentional answer before any handler, session or origin check runs, whether or not the
   // route is registered in this configuration.
   if (CONFIG.mode === 'product' && productUnavailable(key)) return json(res, 404, { error: 'not available on this service', code: 'unavailable' });
   const handler = routes[key];
   if (!handler) return json(res, 404, { error: 'not found' });
+  if (OIDC_ONLY_SIGNUPS.has(key) && oidcOnlyRefused(res, null)) return;
   // The origin check may read an account (a Bearer has to verify), so an unavailable store is a
   // 503 here, never an unhandled rejection and never a pass.
   let sameOrigin, bearerOnlyFails = false;
@@ -3017,8 +3863,10 @@ const server = http.createServer(async (req, res) => {
     // Logged, not audited: this is reachable without a session, and an audit entry per attempt
     // would let anyone fill the log. An operator who has genuinely mis-set ORIGIN needs to see
     // the mismatch, and the container log is where they will look.
-    console.warn('refused cross-origin', key, 'origin=' + req.headers.origin, 'expected=' + ORIGIN);
-    return json(res, 403, { error: 'cross-origin request refused' });
+    // The answer carries ORIGIN too (the app shows it, see passkeyError in lib/api.js): it is no
+    // secret, and a hostile page cannot read a response CORS never allowed it.
+    console.warn(originHint(key, req.headers.origin, ORIGIN, req.headers['sec-fetch-site']));
+    return json(res, 403, { error: 'cross-origin request refused', code: 'origin-mismatch', expected: ORIGIN });
   }
   // After the origin check, so a forged request spends nobody's budget. The password routes only
   // (see the sign-in throttle above).
@@ -3060,3 +3908,24 @@ server.headersTimeout = 60000;
 // (the tests spawn the server that way, and so does anyone running two instances on one box) has
 // no other way to learn it.
 server.listen(PORT, () => console.log(`gym-api on :${server.address().port} (rpID=${RP_ID}, origin=${ORIGIN})`));
+
+// The server's own command for a locked-out owner or admin (#584, recover.js): asked over a local
+// socket only this process's user can open (admin-socket.js explains why not by editing db.json).
+// One command: a recovery code for a profile named, or picked by id when several share the name.
+const CLI_REQ = { headers: {}, socket: {} };
+// File mode only: it acts on db.json, and product mode has no instance owner to recover.
+if (CONFIG.mode === 'file') startAdminSocket({
+  handle: async msg => {
+    if (!msg || msg.cmd !== 'recover') return { error: 'unknown command' };
+    const id = typeof msg.id === 'string' ? msg.id : null;
+    const k = nameKey(typeof msg.name === 'string' ? msg.name : '');
+    const found = id ? db.users.filter(u => u.id === id) : k ? db.users.filter(u => nameKey(u.name) === k || u.email === k) : [];
+    const row = u => ({ id: u.id, name: u.name, created: u.created || null, admin: isAdmin(u), owner: isOwner(u) });
+    if (!found.length) return { error: id ? 'no profile with that id' : 'no profile with that name' };
+    if (found.length > 1) return { error: 'several profiles have that name: pick one with --id', matches: found.map(row) };
+    const u = found[0];
+    if (u.disabled) return { error: 'that profile is disabled: enable it in the admin dashboard first' };
+    const { code, link } = await issueRecovery(CLI_REQ, u, null);
+    return { ...row(u), code, expires: link.exp };
+  }
+});

@@ -4,10 +4,13 @@
  * are closures over the db and the session secret, and passing them in keeps this module free
  * of a cycle (and trivially testable against fakes).
  */
+import { candidatesFor, discoverLocal } from './core/local-discovery.js';
 import * as cfgStore from './config.js';
 import * as jobs from './jobs.js';
 import { computeCohort } from './cohort.js';
 import { adapterFor } from './adapters/index.js';
+import * as chatgptPlan from './chatgpt-plan.js';
+import { PROVIDER as CHATGPT } from './adapters/chatgpt.js';
 import { canDropPrivileges, privilegeRefusal } from './adapters/spawn.js';
 import { DATA_CATEGORIES } from './core/payload.js';
 import { validateBaseUrl, validateHeaders, baseUrlFor } from './core/providers.js';
@@ -27,12 +30,14 @@ const USER_ERROR = {
 const hostOf = url => { try { return url ? new URL(url).host : null; } catch { return null; } };
 const HTTP_FOR = { off: 503, busy: 409, cap: 429, consent: 403, shared: 409, unprivileged: 503 };
 
+// The one Sign in with ChatGPT in flight (admin only, ten-minute window: chatgpt-plan.js).
+let chatgptPending = null;
 export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
   /** Every user route starts the same way: signed in, feature on, feature reachable. The class
    *  goes beside the words, as enqueue's refusal sends it: the app shows its own translated line
    *  for the class, and these English words only where it has none. */
-  const guard = (req, res) => {
-    const user = readSession(req);
+  const guard = async (req, res) => {
+    const user = await readSession(req);
     if (!user) { json(res, 401, { error: 'not signed in' }); return null; }
     if (!cfgStore.isEnabled() || !cfgStore.isConnected()) { json(res, 503, { error: USER_ERROR.off, code: 'off' }); return null; }
     return user;
@@ -50,7 +55,7 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
     // that reads it sits behind a session anyway, and on an invite-only instance which provider
     // this box is wired to is nobody's business who has not been let in.
     'GET /api/coach/disclosure': async (req, res) => {
-      if (!readSession(req)) return json(res, 401, { error: 'not signed in' });
+      if (!await readSession(req)) return json(res, 401, { error: 'not signed in' });
       const cfg = cfgStore.load();
       json(res, 200, {
         provider: cfg.provider,
@@ -65,14 +70,14 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
     },
 
     'GET /api/coach/status': async (req, res) => {
-      const user = guard(req, res); if (!user) return;
+      const user = await guard(req, res); if (!user) return;
       // The chat composer's maxLength rides on this poll rather than a one-off fetch, so an
       // admin raising or lowering the limit reaches an open chat within one poll cycle.
       json(res, 200, { ...jobs.status(user.id), maxMessageLen: cfgStore.load().maxMessageLen });
     },
 
     'POST /api/coach/plan': async (req, res) => {
-      const user = guard(req, res); if (!user) return;
+      const user = await guard(req, res); if (!user) return;
       const body = await readBody(req);
       try {
         // The admin's configured length is the real limit; jobs.enqueue is where it is actually
@@ -89,13 +94,14 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
     },
 
     'POST /api/coach/review': async (req, res) => {
-      const user = guard(req, res); if (!user) return;
+      const user = await guard(req, res); if (!user) return;
       const body = await readBody(req);
       try {
         const job = jobs.enqueue(user.id, {
           kind: 'review',
           lang: body.lang,
-          note: body.note ? String(body.note).slice(0, cfgStore.MAX_MESSAGE_LEN_CEILING) : null
+          note: body.note ? String(body.note).slice(0, cfgStore.MAX_MESSAGE_LEN_CEILING) : null,
+          vitals: body.vitals && typeof body.vitals === 'object' && !Array.isArray(body.vitals) ? body.vitals : null
         });
         json(res, 202, { job });
       } catch (e) { failEnqueue(res, e); }
@@ -103,7 +109,7 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
 
     // One workout, read closely. Nothing to apply — the card is kept in the user's log.
     'POST /api/coach/debrief': async (req, res) => {
-      const user = guard(req, res); if (!user) return;
+      const user = await guard(req, res); if (!user) return;
       const body = await readBody(req);
       try {
         const job = jobs.enqueue(user.id, { kind: 'debrief', lang: body.lang, workoutId: body.workoutId ? String(body.workoutId).slice(0, 40) : null });
@@ -111,21 +117,65 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
       } catch (e) { failEnqueue(res, e); }
     },
 
+    // A question in the chat. Answered in words; nothing to apply. The running session rides
+    // along when there is one, since the server never holds it.
+    'POST /api/coach/ask': async (req, res) => {
+      const user = await guard(req, res); if (!user) return;
+      const body = await readBody(req);
+      const text = typeof body.text === 'string' ? body.text.trim() : '';
+      if (!text) return json(res, 400, { error: 'a question is required', code: 'invalid' });
+      try {
+        const job = jobs.enqueue(user.id, {
+          kind: 'ask',
+          lang: body.lang,
+          note: text.slice(0, cfgStore.MAX_MESSAGE_LEN_CEILING),
+          today: body.today && typeof body.today === 'object' && !Array.isArray(body.today) ? body.today : null,
+          vitals: body.vitals && typeof body.vitals === 'object' && !Array.isArray(body.vitals) ? body.vitals : null,
+          routines: Array.isArray(body.routines) ? body.routines.slice(0, 8) : null
+        });
+        json(res, 202, { job });
+      } catch (e) { failEnqueue(res, e); }
+    },
+
+    // "Ask the Coach" on an exercise mid-workout (the `adapt` job): up to six changes to the
+    // unfinished part of the session, ticked on the phone and applied there. The running session
+    // rides along, as with a question; the server never holds it.
+    'POST /api/coach/adapt': async (req, res) => {
+      const user = await guard(req, res); if (!user) return;
+      const body = await readBody(req);
+      const today = body.today && typeof body.today === 'object' && !Array.isArray(body.today) ? body.today : null;
+      const entry = Number.isInteger(body.entry) ? body.entry : -1;
+      if (!today || !Array.isArray(today.entries) || entry < 0 || entry >= today.entries.length) {
+        return json(res, 400, { error: 'a running workout and one of its exercises are required', code: 'invalid' });
+      }
+      try {
+        const job = jobs.enqueue(user.id, {
+          kind: 'adapt',
+          lang: body.lang,
+          note: typeof body.text === 'string' && body.text.trim() ? body.text.trim().slice(0, cfgStore.MAX_MESSAGE_LEN_CEILING) : null,
+          today,
+          focus: { entry, reason: typeof body.reason === 'string' ? body.reason.slice(0, 16) : 'other' },
+          activeId: typeof body.activeId === 'string' ? body.activeId.slice(0, 64) : null
+        });
+        json(res, 202, { job });
+      } catch (e) { failEnqueue(res, e); }
+    },
+
     /* How this profile sits against everyone else on the instance who opted in: medians only,
        at least three people, and nothing for a profile that does not share itself. */
     'GET /api/coach/cohort': async (req, res) => {
-      const user = guard(req, res); if (!user) return;
+      const user = await guard(req, res); if (!user) return;
       if (!cfgStore.load().community) return json(res, 200, { ok: false, enabled: false });
       json(res, 200, computeCohort(user.id));
     },
     'POST /api/coach/cohort/share': async (req, res) => {
-      const user = guard(req, res); if (!user) return;
+      const user = await guard(req, res); if (!user) return;
       const body = await readBody(req);
       json(res, 200, { ok: true, sharing: jobs.setShare(user.id, !!body.share) });
     },
 
     'POST /api/coach/pending/resolve': async (req, res) => {
-      const user = guard(req, res); if (!user) return;
+      const user = await guard(req, res); if (!user) return;
       const body = await readBody(req);
       json(res, 200, jobs.resolvePending(user.id, {
         accepted: Array.isArray(body.accepted) ? body.accepted : [],
@@ -137,7 +187,7 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
     // Consent withdrawn, or the profile turned the Coach off: drop everything held server-side
     // for them at once, without waiting for a sync to carry the news (D5).
     'POST /api/coach/forget': async (req, res) => {
-      const user = readSession(req);
+      const user = await readSession(req);
       if (!user) return json(res, 401, { error: 'not signed in' });
       jobs.clearUser(user.id);
       json(res, 200, { ok: true });
@@ -146,7 +196,7 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
     /* ------------------------------ admin ------------------------------ */
 
     'GET /api/admin/coach': async (req, res) => {
-      if (!requireAdmin(req, res)) return;
+      if (!await requireAdmin(req, res)) return;
       const cfg = cfgStore.load();
       const adapter = adapterFor(cfg.provider);
       // For the runtime-backed providers this asks "is the runtime there"; for an HTTPS one it
@@ -170,6 +220,7 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
           setupToken: !!p.setupToken, deviceLogin: !!p.deviceLogin, apiKey: !!p.apiKeyEnv,
           http: !!p.http, baseUrl: !!p.baseUrl, keyOptional: !!p.keyOptional, keyPlaceholder: p.keyPlaceholder || null,
           defaultModel: p.defaultModel || null,
+          keyUrl: p.keyUrl || null, signIn: p.signIn || null, web: !!p.web, oauth: !!p.oauthEnv && !p.setupToken,
           // Which providers already hold a key — so switching chips is visibly not a reset.
           connected: !!(cfgStore.authFor(cfg, id) && cfgStore.authFor(cfg, id).data)
         })),
@@ -185,6 +236,7 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
         maxMessageLen: cfg.maxMessageLen,
         maxOutputTokens: cfg.maxOutputTokens,
         community: !!cfg.community,
+        web: !!cfg.web, routinesUrl: cfg.routinesUrl || null,
         runtime: { ok: !!check.ok, version: check.version || null, error: check.error || null, needsKey: !!check.needsKey },
         authMode: cfg.authMode,
         boundUid: cfgStore.boundUidFor(cfg),
@@ -217,7 +269,7 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
     },
 
     'POST /api/admin/coach/config': async (req, res) => {
-      if (!requireAdmin(req, res)) return;
+      if (!await requireAdmin(req, res)) return;
       const body = await readBody(req);
       const patch = {};
       if (body.enabled !== undefined) patch.enabled = !!body.enabled;
@@ -253,6 +305,13 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
         patch.providerOptions = { ...current.providerOptions, ...(patch.providerOptions || {}), [target]: next };
       }
       if (body.community !== undefined) patch.community = !!body.community;
+      if (body.web !== undefined) patch.web = !!body.web;
+      // The routines library's index (docs/ROUTINES_LIBRARY.md): an https address, 'off', or '' for the default.
+      if (body.routinesUrl !== undefined) {
+        const v = String(body.routinesUrl || '').trim();
+        if (v && v !== 'off' && !/^https:\/\/[^\s]{3,300}$/.test(v)) return json(res, 400, { error: 'the routines index needs an https:// address, or "off"' });
+        patch.routinesUrl = v || null;
+      }
       if (body.caps) {
         patch.caps = {
           perProfileDaily: Math.max(0, Math.min(200, +body.caps.perProfileDaily || 0)),
@@ -285,7 +344,7 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
     },
 
     'POST /api/admin/coach/test': async (req, res) => {
-      if (!requireAdmin(req, res)) return;
+      if (!await requireAdmin(req, res)) return;
       const r = await jobs.testRun();
       json(res, 200, r);
     },
@@ -293,13 +352,22 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
     /* The models the configured endpoint serves, so the card can offer a list rather than a
        text field that goes stale with every model release. HTTPS providers only. */
     'POST /api/admin/coach/models': async (req, res) => {
-      if (!requireAdmin(req, res)) return;
+      if (!await requireAdmin(req, res)) return;
       const cfg = cfgStore.load();
       const adapter = adapterFor(cfg.provider);
       if (!adapter || typeof adapter.models !== 'function') return json(res, 200, { ok: false, error: 'this provider does not list models', models: [] });
       const cred = cfgStore.credentialFor(cfgStore.boundUidFor(cfg));
       const env = cfgStore.jobEnv(process.env.TMPDIR || '/tmp', cred.ok ? cred : undefined);
       json(res, 200, await adapter.models(cfg, env));
+    },
+
+    /* Ollama, LM Studio or llama.cpp next to the api (same compose project, the Docker host, this
+       machine), found by asking a fixed list of addresses for their models. Admin only, and the
+       list never comes from the request, so it cannot be aimed anywhere else. */
+    'POST /api/admin/coach/discover': async (req, res) => {
+      if (!await requireAdmin(req, res)) return;
+      const hosts = ['ollama', 'lmstudio', 'llama', 'host.docker.internal', '172.17.0.1', 'localhost'];
+      json(res, 200, { ok: true, found: await discoverLocal(candidatesFor(hosts)) });
     },
 
     /* Connect the instance credential. Deferred while the fixture was the only provider — it
@@ -311,7 +379,7 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
        the configured provider actually declares, so a Codex key cannot be filed under Claude
        and then silently go nowhere at job time. */
     'POST /api/admin/coach/connect': async (req, res) => {
-      if (!requireAdmin(req, res)) return;
+      if (!await requireAdmin(req, res)) return;
       const body = await readBody(req);
       const cfg = cfgStore.load();
       // A key may be filed for a provider that is not the active one, so the chips can be
@@ -333,11 +401,57 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
       json(res, 200, { ok: true });
     },
 
+    /* Sign in with ChatGPT for plan usage (chatgpt-plan.js, preview, COACH_CHATGPT_PLAN=on). Start
+       hands back the address to open in the admin's own browser; that browser ends on a loopback
+       page that does not load, and Finish takes the address it shows. The verifier never leaves
+       this server. 404 without the switch, like a route that is not there. */
+    'POST /api/admin/coach/chatgpt/start': async (req, res) => {
+      if (!await requireAdmin(req, res)) return;
+      if (!chatgptPlan.on() || !cfgStore.PROVIDERS[CHATGPT]) return json(res, 404, { error: 'not found' });
+      const cfg = cfgStore.load();
+      let hostId = cfg.chatgptHost;
+      if (!hostId) { hostId = chatgptPlan.newHostId(); cfgStore.save({ chatgptHost: hostId }); }
+      const rec = cfgStore.authFor(cfg, CHATGPT);
+      const prev = rec && rec.data ? cfgStore.decrypt(rec.data) : null;
+      const s = chatgptPlan.startSignIn({ hostId, clientId: cfg.chatgptClient || prev?.clientId || null, idTokenHint: prev?.idToken || null });
+      chatgptPending = s.pending;
+      json(res, 200, { url: s.url, redirect: chatgptPlan.REDIRECT_URI });
+    },
+    'POST /api/admin/coach/chatgpt/finish': async (req, res) => {
+      if (!await requireAdmin(req, res)) return;
+      if (!chatgptPlan.on() || !cfgStore.PROVIDERS[CHATGPT]) return json(res, 404, { error: 'not found' });
+      const body = await readBody(req);
+      const cb = chatgptPlan.parseCallback(body.callback, chatgptPending);
+      if (!cb.ok) return json(res, 400, { error: cb.error });
+      const pending = chatgptPending;
+      chatgptPending = null;
+      const ex = await chatgptPlan.exchangeCode(fetch, pending, cb.code, cb.clientId).catch(e => ({ ok: false, error: 'could not reach auth.openai.com: ' + e.message }));
+      if (!ex.ok) return json(res, 502, { error: ex.error });
+      let jwks = null;
+      try { jwks = await (await fetch(chatgptPlan.JWKS_URL)).json(); } catch { /* checked below */ }
+      const idt = chatgptPlan.verifyIdToken(ex.tokens.id_token, jwks, { audience: cb.clientId, nonce: pending.nonce });
+      if (!idt.ok) return json(res, 502, { error: idt.error });
+      if (!chatgptPlan.planGranted(ex.tokens.scope)) return json(res, 400, { error: 'signed in, but ChatGPT plan use was not allowed; sign in again and allow it' });
+      cfgStore.save({ chatgptClient: cb.clientId });
+      cfgStore.saveAuth(CHATGPT, {
+        type: 'oauth', account: String(idt.claims.email || '').slice(0, 120),
+        data: cfgStore.encrypt(chatgptPlan.credentialOf(ex.tokens, { clientId: cb.clientId, hostId: pending.hostId, claims: idt.claims })),
+        connectedAt: new Date().toISOString()
+      });
+      json(res, 200, { ok: true, account: idt.claims.email || null, usage: chatgptPlan.USAGE_URL });
+    },
+
     'POST /api/admin/coach/disconnect': async (req, res) => {
-      if (!requireAdmin(req, res)) return;
+      if (!await requireAdmin(req, res)) return;
       const body = await readBody(req);
       const provider = body.provider !== undefined ? String(body.provider) : cfgStore.load().provider;
       if (!cfgStore.PROVIDERS[provider]) return json(res, 400, { error: 'unknown provider' });
+      // A ChatGPT session is ended at OpenAI too, as its docs ask; the local copy goes either way.
+      if (provider === CHATGPT) {
+        const rec = cfgStore.authFor(cfgStore.load(), CHATGPT);
+        const cred = rec && rec.data ? cfgStore.decrypt(rec.data) : null;
+        if (cred) await chatgptPlan.revokeCredential(fetch, cred);
+      }
       cfgStore.saveAuth(provider, null);
       json(res, 200, { ok: true });
     },
@@ -350,7 +464,7 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
     /* Whose account this profile is about to spend. Its own route because both the Coach screen
        and the admin card must state it, and neither should be inferring it from settings. */
     'GET /api/coach/account': async (req, res) => {
-      const user = readSession(req);
+      const user = await readSession(req);
       if (!user) return json(res, 401, { error: 'not signed in' });
       json(res, 200, cfgStore.accountFor(user.id));
     }

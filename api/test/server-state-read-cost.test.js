@@ -185,7 +185,10 @@ test('the three hot-path state reads all go through readStateCached', () => {
   const revFn = store.slice(store.indexOf('async readMemberRevision('), store.indexOf('async updateMemberState('));
   assert.match(revFn, /readStateCached\(uid\)/, 'the file store answers the revision poll from the stat cache');
   assert.match(handler('GET /api/data'), /STATE\.readMemberState\(user\.id\)/);
-  assert.match(handler('PUT /api/data'), /STATE\.updateMemberState\(user\.id/);
+  // PUT ends in commitState, the write every document-replacing route shares, which runs the
+  // write rules inside the store's updateMemberState.
+  assert.match(handler('PUT /api/data'), /commitState\(user\.id/);
+  assert.match(src.slice(src.indexOf('async function commitState('), src.indexOf('function afterStateWrite(')), /STATE\.updateMemberState\(uid/);
   const strict = /readStateStrict\(uid\)/;
   assert.match(store.slice(store.indexOf('async readMemberState('), store.indexOf('async readMemberRevision(')), strict);
   assert.match(store.slice(store.indexOf('async updateMemberState(')), strict);

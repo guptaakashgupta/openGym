@@ -1,12 +1,14 @@
 # openGym in Google Play and the App Store
 
-openGym ships to phones three ways, all from the same code and the same version number:
+openGym ships to phones three ways, and to watches two more, all from the same code and the same version number:
 
 | | Where | Who installs updates | Built where |
 |---|---|---|---|
 | Android APK | GitHub release, opengym.ch | the app itself (Settings → About) | release machine |
 | Android, Google Play | Play Store | Google Play | release machine |
 | iPhone (+ Apple Watch) | App Store, TestFlight beta | the App Store | Mac runner (compile) + release machine (finish, sign, upload) |
+| Wear OS watch | Play Store (Wear OS closed test), `openGym-Wear-X.Y.Z.apk` on the GitHub release | Google Play, or by hand for the APK | release machine (`scripts/android/build-wear.sh`) |
+| Garmin watch | [Connect IQ Store](https://apps.garmin.com/apps/62e66310-66de-4bdd-8e40-5d2c0d853a08) | Garmin Connect | release machine (`openGym.iq`, uploaded by hand, see GARMIN.md) |
 
 The two Android builds are flavours of one Gradle project (`frontend/android/app/build.gradle`):
 `sideload` keeps the updater (InstallPlugin, `REQUEST_INSTALL_PACKAGES`), `play` leaves both out,
@@ -32,8 +34,10 @@ ever sees the repo's 180 px media.
   (`ios/App/App/PrivacyInfo.xcprivacy`): no tracking, no data collected. No non-exempt
   encryption (`ITSAppUsesNonExemptEncryption = NO`, HTTPS only). The Coach asks before anything
   is sent to an AI provider and names it (App Review Guideline 5.1.2(i), November 2025).
-- **Both:** no account, no ads, no analytics in the app. Donations are only linked from the
-  website, never from inside the app: both stores require their own payment system for that.
+- **Both:** no account, no ads, no analytics in the app, and nothing to buy. Settings → About &
+  updates links to Buy Me a Coffee, Ko-fi and GitHub Sponsors: plain links that open in the
+  browser, unlock nothing, and never pop up on their own. On the iPhone the same section has a
+  link to writing an App Store review (no review prompt, App Review 5.6.1).
 
 ## Every release
 
@@ -68,6 +72,24 @@ To try packs on an emulator: `make-asset-packs.mjs --px 240 --builtin 180 --limi
 Upload the `.aab` in Play Console → Test and release → Production (or a testing track first),
 with the release notes from the changelog.
 
+### F-Droid
+
+F-Droid builds the `fdroid` flavour itself from the release tag (fdroiddata recipe
+`metadata/ch.duartesantos.opengym.yml`): the Wear OS module deleted, then
+`scripts/android/fdroid-prebuild.sh` (`npm ci`, the phone bundle with the repo's 180 px media,
+the ML Kit plugin out of the Gradle build), then `assembleFdroidRelease`. The build is
+reproducible, so F-Droid ships it with our signature when we give it a matching signed copy:
+
+```sh
+scripts/android/build-fdroid-reference.sh $K/opengym-release.keystore $K/keystore.pass $K/key.alias ~/release vX.Y.Z
+#  → openGym-FDroid-X.Y.Z.apk (+ .sha256): attach it to the GitHub release of vX.Y.Z
+```
+
+It builds in a fresh clone of the tag with JDK 21 and a clean environment, and signs without
+zipalign, with `--alignment-preserved` and no v1 signature: anything that moves the zip entries
+makes F-Droid's copied signature fail. Without the file F-Droid's build of that version fails
+(`Binaries` + `AllowedAPKSigningKeys` in the recipe), so it belongs to every release.
+
 ### iPhone
 
 The IPA carries the app, the asset pack downloader extension (`AnimationPacksDownloader`), the
@@ -79,7 +101,7 @@ own widget. Each is a separate bundle id with its own App Store provisioning pro
    exercise media, and stamps the commit into the zip (`ci-commit.txt`). Download the
    `ios-unsigned-ipa` artifact of the release commit (`gh run download <run> -n ios-unsigned-ipa`).
 2. **Phone bundle with the animations**, from the same commit, on the release machine:
-   `cd frontend && VITE_CLIP_EXT=webp APP_MEDIA_DIR=/mnt/backup-hdd/opengym-media/build-appwebp npm run build:mobile`
+   `cd frontend && VITE_CLIP_EXT=webp VITE_BUILTIN_CLIP_PX=<px> APP_MEDIA_DIR=<media>/quality/<px> npm run build:mobile`
 3. **Finish and sign** (`scripts/ios/finish-ipa.sh`, no Mac needed, `rcodesign` signs on Linux):
    ```sh
    EXT_PROFILE=downloader.mobileprovision WIDGETS_PROFILE=widgets.mobileprovision \
@@ -179,10 +201,14 @@ on the phone (Settings → Reset, or uninstall).
 4. App Privacy: "Data Not Collected". Age rating: 4+. Category: Health & Fitness.
 5. Review notes: no sign-in needed ("Use on this device"). The Coach is optional and needs the
    user's own AI provider key; give the reviewer a key with a small spending limit, or say so.
+6. What review sent back on v1.4.2, so it doesn't happen twice: no "free" in the subtitle (price
+   words belong to the price field), and no "Not now" on a screen in front of a system permission
+   dialog. The first-start permission screens have a single Continue that opens the iOS dialog,
+   where the no belongs (Guideline 5.1.1(iv), `views/PermissionSteps.jsx`).
 
 ## Licensing
 
 The repository's `NOTICE.md` carries an app-store exception to the AGPL (an additional
-permission under AGPL §7, since July 2026). The Contributor License Agreement in preparation
-covers the rest: it lets the project keep publishing and updating the store apps long term,
-contributions included.
+permission under AGPL §7, since July 2026). The [Contributor License Agreement](../CLA.md)
+(live since October 2026) covers the rest: it lets the project keep publishing and updating the
+store apps long term, contributions included.

@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client'
 import { EXDB, EXIDX } from './lib/exercises.js'
 import { useStore } from './store/useStore.js'
 import { useUI } from './store/useUI.js'
-import { exConfigSheet, exercisePicker } from './sheets.jsx'
+import { exConfigSheet, exercisePicker, swapActiveWorkoutToBackup } from './sheets.jsx'
 import { exerciseNameFor } from './lib/i18n.js'
 import { exerciseNameText } from './lib/format.js'
 
@@ -68,10 +68,51 @@ describe('the routine editor\'s exercise sheet', () => {
       input.dispatchEvent(new Event('input', { bubbles: true }))
     })
     const pick = [...picker.querySelectorAll('.item')].find(el => el.querySelector('.tt')?.textContent === name)
-    act(() => pick.click())
+    act(() => pick.querySelector('.tap-main').click())
     act(() => [...sheet.querySelectorAll('button')].find(b => b.getAttribute('aria-label') === 'Remove “' + exerciseNameText(EXIDX['0047']) + '”').click())
     act(() => save(host))
     expect(onSave.mock.calls[0][0].subs).toEqual(['0289'])
+  })
+
+  it('suggests a few backups to add in one tap, no Coach needed (#1003)', () => {
+    const onSave = vi.fn()
+    exConfigSheet(ex, { sets: 3, reps: 8, weight: 60, mode: 'reps' }, onSave, null, null, null, null, undefined, { backups: true })
+    const host = render(useUI.getState().sheets.at(-1))
+    act(() => row(host, 'Backups').click())
+    const sheet = render(useUI.getState().sheets.at(-1))
+    const adds = [...sheet.querySelectorAll('button')].filter(b => /^Add “.*” as a backup$/.test(b.getAttribute('aria-label') || ''))
+    expect(adds.length).toBe(3)
+    const first = adds[0].getAttribute('aria-label').slice(5, -13)
+    act(() => adds[0].click())
+    // Added to the list, and no longer suggested.
+    expect([...sheet.querySelectorAll('.backup-open .lrow-t')].map(n => n.textContent)).toEqual([first])
+    expect([...sheet.querySelectorAll('button')].some(b => b.getAttribute('aria-label') === 'Add “' + first + '” as a backup')).toBe(false)
+    act(() => save(host))
+    expect(onSave.mock.calls[0][0].subs).toHaveLength(1)
+    expect(onSave.mock.calls[0][0].subs[0]).not.toBe('0025')
+  })
+
+  it('a tap on a backup sets its own plan, saved with the slot (#978)', () => {
+    const onSave = vi.fn()
+    exConfigSheet(ex, { sets: 3, reps: 8, weight: 60, mode: 'reps', subs: ['0047'] }, onSave, null, null, null, null, undefined, { backups: true })
+    const host = render(useUI.getState().sheets.at(-1))
+    act(() => row(host, 'Backups').click())
+    const sheet = render(useUI.getState().sheets.at(-1))
+    const open = sheet.querySelector('.backup-open')
+    expect(open.textContent).toContain('Same plan as this exercise')
+    act(() => open.click())
+    // The backup's own settings, opened on the slot's plan carried over: a real form, not a read view.
+    const cfg = render(useUI.getState().sheets.at(-1))
+    expect(cfg.textContent.toLowerCase()).toContain(exerciseNameText(EXIDX['0047']).toLowerCase())
+    const plus = [...cfg.querySelectorAll('button')].find(b => /increase|more|\+/i.test(b.getAttribute('aria-label') || b.textContent))
+    expect(plus).toBeTruthy()
+    act(() => save(cfg))
+    expect(sheet.querySelector('.backup-open').textContent).not.toContain('Same plan as this exercise')
+    act(() => save(host))
+    const saved = onSave.mock.calls[0][0]
+    expect(saved.subs).toEqual(['0047'])
+    expect(saved.subCfg['0047']).toMatchObject({ sets: 3, reps: 8 })
+    expect(saved.subCfg['0047'].id).toBeUndefined()
   })
 
   it('elsewhere (a workout\'s own sheet) the row is not offered, and the backups still survive a save', () => {
@@ -89,13 +130,46 @@ describe('the swap picker', () => {
     exercisePicker(() => {}, { title: 'Swap exercise', like: '0025', backups: ['0289', 'gone'] })
     const host = render(useUI.getState().sheets.at(-1))
     const heads = [...host.querySelectorAll('h4.sec')].map(h => h.textContent)
-    expect(heads.slice(0, 2)).toEqual(['Your backups', 'Everything else'])
+    // then the suggested substitutes (#674), which leave out what is already a backup
+    expect(heads.slice(0, 2)).toEqual(['Your backups', 'Suggested substitutes'])
     const first = host.querySelector('h4.sec').nextElementSibling
     expect(first.textContent).toContain(exerciseNameFor(EXIDX['0289']))
+    const suggested = host.querySelector('section[aria-label="Suggested substitutes"]')
+    expect(suggested.textContent).not.toContain(exerciseNameFor(EXIDX['0289']))
   })
   it('no backups, no section', () => {
     exercisePicker(() => {}, { title: 'Swap exercise', like: '0025' })
     const host = render(useUI.getState().sheets.at(-1))
     expect([...host.querySelectorAll('h4.sec')].map(h => h.textContent)).not.toContain('Your backups')
+  })
+})
+
+describe('one tap from the exercise menu (#649)', () => {
+  const slot = { id: '0025', mode: 'reps', sets: 4, reps: 6, weight: 80, restSec: 150, subs: ['0047', '0289'] }
+  const install = (done = false) => useStore.setState(s => ({ S: { ...s.S, workouts: [], routines: [{ id: 'r', name: 'Push', ex: [slot] }],
+    active: { id: 'a', d: '2026-10-24', start: Date.now(), routineId: 'r', name: 'Push', cur: 0,
+      entries: [{ id: '0025', rid: 'r', target: { ...slot }, plan: null, sets: [{ w: 80, r: 6, done }] }] } } }))
+
+  it('puts the backup in the slot with the slot\'s plan, and swapping back is one tap too', () => {
+    install()
+    swapActiveWorkoutToBackup(0, '0047')
+    let entry = useStore.getState().S.active.entries[0]
+    expect(entry.id).toBe('0047')
+    expect(entry.rid).toBe('r')
+    expect(entry.target).toMatchObject({ sets: 4, reps: 6, restSec: 150, subs: ['0025', '0289'] })
+    expect(entry.sets.filter(x => !x.warm)).toHaveLength(4)
+    swapActiveWorkoutToBackup(0, '0025')
+    entry = useStore.getState().S.active.entries[0]
+    expect(entry.id).toBe('0025')
+    expect(entry.target.subs).toEqual(['0047', '0289'])
+    // The routine itself is untouched: the swap is today's.
+    expect(useStore.getState().S.routines[0].ex[0]).toEqual(slot)
+  })
+
+  it('asks first when sets are logged, the same as any swap', () => {
+    install(true)
+    swapActiveWorkoutToBackup(0, '0047')
+    expect(useStore.getState().S.active.entries[0].id).toBe('0025')
+    expect(useUI.getState().sheets.length).toBe(1)
   })
 })

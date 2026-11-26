@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { lazyAssets, stampSw } from './scripts/sw-stamp.mjs'
+import { mobileViewport } from './src/lib/viewport-zoom.js'
 
 // The regular dev server shows upstream openGym. `npm run dev:pilot` reads the same
 // product file as the pilot build and previews its name and icon against the local API.
@@ -66,6 +67,22 @@ const catalogueMedia = {
   }
 }
 
+// The pilot product build (scripts/build-pilot.mjs) names no upstream service address
+// (check-pilot-bundle.mjs). The Coach's shared core under ../api/coach/core, which the app imports
+// as it is, carries three: the routine library's index, and OpenRouter's referer and phone bridge.
+// In the product build they name the product server instead (the Coach is unavailable there, and
+// a missing library index is simply absent).
+// ponytail: a rewrite of one known origin in one directory; the bundle gate fails the build on any
+// address it misses.
+const pilotUpstream = process.env.VITE_PILOT === '1' && {
+  name: 'opengym-pilot-upstream',
+  apply: 'build',
+  transform(code, id) {
+    if (!id.includes('/api/coach/core/') || !code.includes('https://opengym.ch')) return null
+    return { code: code.replaceAll('https://opengym.ch', process.env.VITE_PILOT_SERVER), map: null }
+  }
+}
+
 // Optional web analytics (Umami). Injected only when BOTH vars are set at build time,
 // so a plain `npm run build` — and every self-hosted install — stays telemetry-free.
 // Set for the public instance: VITE_UMAMI_SRC=https://stats.example/script.js VITE_UMAMI_ID=<uuid>
@@ -111,11 +128,13 @@ const swStamp = {
 // the mobile build and `cap sync` (two builds in one worktree) shipped the web shell inside an
 // APK: no Android-only settings, a service worker, the passkey login. scripts/check-mobile-bundle.mjs
 // reads this tag in the synced copy after `cap sync` and fails the build without it.
+// The phone flavour also keeps zooming off (src/lib/viewport-zoom.js): the web build lets people
+// pinch, the Capacitor apps stay as they were.
 const flavor = {
   name: 'opengym-flavor',
-  transformIndexHtml() {
+  transformIndexHtml(html) {
     if (process.env.VITE_MOBILE !== '1') return
-    return [{ tag: 'meta', attrs: { name: 'opengym-flavor', content: 'mobile' }, injectTo: 'head' }]
+    return { html: mobileViewport(html), tags: [{ tag: 'meta', attrs: { name: 'opengym-flavor', content: 'mobile' }, injectTo: 'head' }] }
   }
 }
 
@@ -132,8 +151,10 @@ const pkgVersion = JSON.parse(readFileSync(new URL('./package.json', import.meta
 const appVersion = process.env.APP_BUILD ? `${pkgVersion}+${process.env.APP_BUILD}` : pkgVersion
 
 export default defineConfig({
-  define: { __APP_VERSION__: JSON.stringify(appVersion) },
-  plugins: [react(), pilotPreview, umami, flavor, swStamp, catalogueMedia].filter(Boolean),
+  // __SEASON_CLOCK__: the seasonal QA date hook (src/lib/season-clock.js), only in a build made
+  // with VITE_SEASON_CLOCK=1 for screenshots. false everywhere else, so the hook is compiled out.
+  define: { __APP_VERSION__: JSON.stringify(appVersion), __SEASON_CLOCK__: JSON.stringify(process.env.VITE_SEASON_CLOCK === '1') },
+  plugins: [react(), pilotPreview, pilotUpstream, umami, flavor, swStamp, catalogueMedia].filter(Boolean),
   base: './',
   server: {
     // The Coach's core (payload, validator, prompts, HTTP adapters) lives in ../api/coach/core
@@ -147,5 +168,11 @@ export default defineConfig({
       } : {})
     }
   },
-  build: { chunkSizeWarningLimit: 1500 }
+  // The iOS app's deployment target is 15.5 (ios/App), so its WebView is Safari 15.5, and the web
+  // app follows the same floor. Vite's own default is Safari 16.4: syntax newer than 15.5 went out
+  // unlowered and one regex lookbehind kept 1.4.2 on its splash there. What the transpiler cannot
+  // lower, scripts/check-bundle-syntax.mjs catches (its test builds the bundle).
+  build: { chunkSizeWarningLimit: 1500, target: ['safari15', 'chrome100', 'firefox100', 'edge100'] },
+  // Gives happy-dom tests a working localStorage on Node 24+ (#733).
+  test: { setupFiles: ['./src/test-setup.js'] }
 })

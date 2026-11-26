@@ -108,9 +108,42 @@ export function restSecFor(entries, unit, defaultRestSec, setRest = null) {
   return idxs.reduce((longest, idx) => {
     // `setRest` is the ticked set's own rest ({ idx, sec }, a pyramid set): it stands in for
     // that member's exercise rest, and a superset still takes the longest of the group.
-    const own = setRest && setRest.idx === idx && setRest.sec > 0 ? setRest.sec : entries?.[idx]?.target?.restSec
-    return Math.max(longest, own > 0 ? own : fallback)
+    const own = setRest && setRest.idx === idx && setRest.sec > 0 ? setRest.sec : ownExerciseRest(entries?.[idx]?.target)
+    return Math.max(longest, own ?? fallback)
   }, 0)
+}
+
+/**
+ * An exercise's own rest after its work sets: its `restSec`, 0 when it is set to "No timer"
+ * (`restOff`, Discord: a 0:00 rest used to mean "the default", so there was no way to say none),
+ * or null when it has none of its own and the default applies. Older apps don't know `restOff`
+ * and read such an exercise as following the default, which is what it did before. A time picked
+ * on one of them next to a restOff it kept wins: it is the newer choice.
+ */
+export function ownExerciseRest(target) {
+  const v = Math.round(Number(target?.restSec)) || 0
+  if (v > 0) return v
+  return target?.restOff === true ? 0 : null
+}
+
+/**
+ * The rest after the last set of an exercise (or a superset's last round), into the next one
+ * (D#487): walking to another machine, loading another bar. The exercise's own `nextRestSec`
+ * (`nextRestOff` for "No timer"), the longest across a superset; else the profile's
+ * (Settings > Workout, `profileSec`, 0 = no timer); else null, which means "like the work sets",
+ * the rest every exercise took into the next before this existed.
+ */
+export function transitionRestFor(entries, unit, profileSec) {
+  const idxs = Array.isArray(unit) && unit.length ? unit : []
+  let own = null
+  for (const idx of idxs) {
+    const tg = entries?.[idx]?.target
+    const v = Math.round(Number(tg?.nextRestSec)) || 0
+    if (v > 0) own = Math.max(own ?? 0, v)
+    else if (tg?.nextRestOff === true) own = Math.max(own ?? 0, 0)
+  }
+  if (own !== null) return own
+  return typeof profileSec === 'number' && Number.isFinite(profileSec) && profileSec >= 0 ? Math.round(profileSec) : null
 }
 
 /**
@@ -141,12 +174,26 @@ export function warmupRestSecFor(entry, setIdx, workRestSec, profileSec) {
 }
 
 /**
+ * One set's own rest, picked from its set menu for this session (#609), or null for none.
+ * 0 is a real choice ("No timer"), so only a missing or broken field means "as the exercise".
+ */
+export function ownSetRest(row) {
+  const v = row?.restSec
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.round(v) : null
+}
+
+/**
  * The break between the two sides of one per-side set, or null for none. An exercise may set its
  * own `sideRestSec` (optional, Discord "set-specific rest timers"). Without it nothing changes:
  * a timed hold pauses `switchSec` (capped at the set's rest, and none with the rest switched off),
- * and a reps set has no break between its sides, as before the field existed.
+ * and a reps set has no break between its sides, as before the field existed. `sideRestOff`
+ * is "no timer" for a hold that wants its switch pause gone but keeps its set rest (#636).
+ * `ownSec` is the set's own rest from its menu (ownSetRest, #609): given, it is this one set's
+ * pause between its sides too (0 = none), before anything the exercise says (#853).
  */
-export function sideRestFor(target, { timed, restAfter, switchSec }) {
+export function sideRestFor(target, { timed, restAfter, switchSec, ownSec = null }) {
+  if (typeof ownSec === 'number' && Number.isFinite(ownSec) && ownSec >= 0) return ownSec > 0 ? Math.round(ownSec) : null
+  if (target?.sideRestOff === true) return null
   const own = Math.round(Number(target?.sideRestSec)) || 0
   if (own > 0) return own
   if (timed && restAfter > 0) return Math.min(switchSec, restAfter)
@@ -176,7 +223,9 @@ export function supersetFlowStep(entries, unit, fromIdx) {
  * goes there without a tap. Only when every exercise of the unit the rest was for is timed
  * (`isTimed(idx)`) and finished, and that unit is still the one on screen; then the next unit with
  * work left (nextUnfinishedUnit), its first exercise. null for anything else: weighted work still
- * waits for Next, as before.
+ * waits for Next, as before, unless the profile asked for it to move on too (#1017, Settings →
+ * Workout → "Next exercise when the rest ends"): the caller then passes an `isTimed` that says yes
+ * to every exercise. A superset still only moves on once its whole round is done.
  */
 export function advanceAfterTimedRest(entries, units, forIdx, cur, isTimed) {
   if (!Array.isArray(entries) || !Array.isArray(units) || !Number.isInteger(forIdx)) return null
@@ -187,3 +236,15 @@ export function advanceAfterTimedRest(entries, units, forIdx, cur, isTimed) {
   return next ? next[0] : null
 }
 
+
+/**
+ * The kind of rest a ticked set starts (#165), for the sound at its end: 'exercise' once the unit
+ * is done and another one follows, 'superset' between the rounds of a superset, 'warmup' after a
+ * warm-up set, 'work' between working sets. Settings → Sound can give each its own.
+ */
+export function restKindAfter({ row, unitDone = false, superset = false }) {
+  if (unitDone) return 'exercise'
+  if (superset) return 'superset'
+  if (row && isWarmupRow(row)) return 'warmup'
+  return 'work'
+}
