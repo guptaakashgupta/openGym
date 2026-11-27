@@ -3,7 +3,7 @@
   "icon": "pilot-gym-icon.svg",
   "appId": "in.askpocket.gym",
   "server": "https://gym.askpocket.in",
-  "media": { "mode": "placeholder" },
+  "media": { "manifest": "media.render.json" },
   "source": {
     "upstream": "https://github.com/DuarteSantos8/openGym",
     "offerUrl": "https://github.com/guptaakashgupta/openGym/tree/{commit}?version={version}"

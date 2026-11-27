@@ -21,10 +21,10 @@ RUN npm ci --ignore-scripts
 COPY api/coach/core/ /app/api/coach/core/
 COPY frontend/ ./
 COPY deploy/pilot/ /app/deploy/pilot/
-# The exercise stills and animations, 180 px, licensed from Gym visual for openGym only: see
-# catalogue/media/NOTICE.md. Into this build stage only; the upstream build moves them into
-# dist/ below, the pilot product build (PILOT_PRODUCT) never does, and this stage never ships.
-COPY catalogue/media/ /app/catalogue-media/
+COPY scripts/catalogue/stage-media.mjs /app/scripts/catalogue/stage-media.mjs
+# Gym visual's catalogue media for the upstream build (catalogue/media/NOTICE.md).
+# The pilot stages media through its own manifest, and this build stage never ships.
+COPY catalogue/media/ /app/catalogue/media/
 # Which build this is, shown in the app as "1.3.8+<build>" next to the version. Without it every
 # image built between two releases calls itself the same thing, and "which build are you running?"
 # cannot be answered from the phone. Unset, the app reports package.json's version as before.
@@ -39,7 +39,7 @@ RUN if [ -n "$RENDER_GIT_COMMIT" ] && [ -n "$PILOT_PRODUCT" ]; then \
       node -e 'const fs=require("fs"); const p="/app/"+process.argv[1]; const v=JSON.parse(fs.readFileSync(p)); v.source.offerUrl=v.source.offerUrl.replace("{commit}",process.argv[2]); fs.writeFileSync(p,JSON.stringify(v));' "$PILOT_PRODUCT" "$RENDER_GIT_COMMIT"; fi
 RUN if [ -n "$PILOT_PRODUCT" ]; then \
       APP_BUILD="$APP_BUILD" PILOT_PRODUCT="/app/$PILOT_PRODUCT" node scripts/build-pilot.mjs --out dist; \
-    else APP_BUILD="$APP_BUILD" npm run build && cp -R /app/catalogue-media dist/exercise-media; fi
+    else APP_BUILD="$APP_BUILD" npm run build && cp -R /app/catalogue/media/ dist/exercise-media; fi
 
 FROM nginxinc/nginx-unprivileged:1-alpine
 # Same reason as in api/Dockerfile: alpine fixes land faster than the nginx image is rebuilt.

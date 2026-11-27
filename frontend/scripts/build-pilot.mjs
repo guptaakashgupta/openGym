@@ -10,13 +10,13 @@
  * android/pilot.properties that build.gradle reads only when it exists.
  *
  * Media: "placeholder" stages no exercise media at all (the app shows its fallback); "licensed"
- * stages exactly the files of the licensed manifest (scripts/catalogue/stage-media.mjs
- * --manifest). The bundle checker runs last and fails the build on any problem. */
+ * (also selected by a manifest alone) stages exactly the files of the licensed manifest
+ * (scripts/catalogue/stage-media.mjs --manifest). The bundle checker runs last. */
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { validateProduct, checkPilotBundle } from './check-pilot-bundle.mjs'
+import { validateProduct, checkPilotBundle, pilotMediaMode } from './check-pilot-bundle.mjs'
 import sharp from 'sharp'
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -38,19 +38,20 @@ if (product.media?.manifest) product.media.manifest = path.resolve(path.dirname(
 if (product.icon) product.icon = path.resolve(path.dirname(path.resolve(FRONTEND, productFile)), product.icon)
 const invalid = validateProduct(product)
 if (invalid.length) fail('the product file is not usable:\n  ' + invalid.join('\n  '))
+const mediaMode = pilotMediaMode(product.media)
 const version = JSON.parse(fs.readFileSync(path.join(FRONTEND, 'package.json'), 'utf8')).version
 const iconFile = product.icon ? path.resolve(path.dirname(path.resolve(FRONTEND, productFile)), product.icon) : null
 
 // Placeholder: the media addresses point at nothing the build ships, so no restricted file is
 // requested from anywhere and the app's fallback shows.
-const mediaEnv = product.media.mode === 'placeholder'
+const mediaEnv = mediaMode === 'placeholder'
   ? { VITE_IMG_BASE: 'exercise-media-unavailable/', VITE_GIF_BASE: 'exercise-media-unavailable/' }
   : {}
 run(process.execPath, [path.join(FRONTEND, 'node_modules/vite/bin/vite.js'), 'build', '--outDir', out, '--emptyOutDir'], {
   VITE_PILOT: '1', VITE_PILOT_SERVER: product.server, ...(mobile ? { VITE_MOBILE: '1' } : {}), ...mediaEnv,
   VITE_PILOT_NAME: product.productName, ...(iconFile ? { VITE_PILOT_ICON: 'icon-180.png' } : {}),
 })
-if (product.media.mode === 'licensed') run(process.execPath, [path.join(FRONTEND, '../scripts/catalogue/stage-media.mjs'), out, '--manifest', product.media.manifest])
+if (mediaMode === 'licensed') run(process.execPath, [path.join(FRONTEND, '../scripts/catalogue/stage-media.mjs'), out, '--manifest', product.media.manifest])
 
 // Branding and the source offer for this exact version.
 const manifestFile = path.join(out, 'manifest.json')
@@ -74,7 +75,7 @@ fs.writeFileSync(path.join(out, 'OPEN-SOURCE.txt'), [
 ].join('\n'))
 fs.writeFileSync(path.join(out, 'pilot-build.json'), JSON.stringify({
   productName: product.productName, appId: product.appId, server: product.server,
-  media: { mode: product.media.mode }, version, builtAt: new Date().toISOString(),
+  media: { mode: mediaMode }, version, builtAt: new Date().toISOString(),
 }, null, 2))
 
 let androidDir
@@ -88,4 +89,4 @@ if (mobile) {
 
 const problems = checkPilotBundle({ webDir: out, product, version, androidDir })
 if (problems.length) fail('the bundle failed its gates:\n  ' + problems.join('\n  '))
-console.log(`build-pilot: ${product.productName} ${version} (${product.media.mode} media) -> ${path.relative(FRONTEND, out)}${mobile ? ' + android' : ''}`)
+console.log(`build-pilot: ${product.productName} ${version} (${mediaMode} media) -> ${path.relative(FRONTEND, out)}${mobile ? ' + android' : ''}`)

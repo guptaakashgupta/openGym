@@ -29,6 +29,12 @@ const APP_ID_RE = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$/
 const TEXT_EXT = /\.(js|mjs|html|json|webmanifest|css|txt)$/i
 const MEDIA_DIR = 'exercise-media'
 
+export function pilotMediaMode(media) {
+  const mode = media?.mode
+  if (mode === undefined && media?.manifest !== undefined) return 'licensed'
+  return mode
+}
+
 export function validateProduct(p) {
   const errors = []
   if (!p || typeof p !== 'object') return ['the product file is not a JSON object']
@@ -40,7 +46,7 @@ export function validateProduct(p) {
   try { url = new URL(p.server) } catch { /* below */ }
   if (!url || url.protocol !== 'https:' || url.origin !== String(p.server).replace(/\/$/, '')) errors.push('server must be an https origin such as https://gym.example.com')
   else if (UPSTREAM_HOSTS.some(h => url.hostname === h || url.hostname.endsWith('.' + h))) errors.push(`server ${url.hostname} is upstream openGym's`)
-  const mode = p.media?.mode
+  const mode = pilotMediaMode(p.media)
   if (mode !== 'placeholder' && mode !== 'licensed') errors.push('media.mode must be "placeholder" (no exercise media) or "licensed"')
   if (mode === 'licensed' && (typeof p.media.manifest !== 'string' || !fs.existsSync(p.media.manifest))) errors.push('media.mode "licensed" needs media.manifest, the licensed asset manifest')
   if (typeof p.source?.upstream !== 'string' || !p.source.upstream.startsWith('https://')) errors.push('source.upstream must link the upstream project')
@@ -56,7 +62,8 @@ const readJson = file => { try { return JSON.parse(fs.readFileSync(file, 'utf8')
 function checkMedia(dir, product, label) {
   const files = walk(path.join(dir, MEDIA_DIR)).filter(f => path.basename(f) !== 'NOTICE.md')
   if (!files.length) return []
-  if (product.media?.mode !== 'licensed') return [`${label}: restricted media present (${files.length} file(s) under ${MEDIA_DIR}/) in a "${product.media?.mode}" build`]
+  const mode = pilotMediaMode(product.media)
+  if (mode !== 'licensed') return [`${label}: restricted media present (${files.length} file(s) under ${MEDIA_DIR}/) in a "${mode}" build`]
   const manifest = readJson(product.media.manifest)
   const listed = new Map((manifest?.files || []).map(f => [f.path, f.sha256]))
   const problems = []

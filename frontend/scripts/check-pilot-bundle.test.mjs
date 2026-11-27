@@ -88,6 +88,9 @@ test('restricted media: none without a licence; with one, only the files it name
   const ok = bundle(licensed)
   write(ok, 'exercise-media/still/0001.webp', 'licensed bytes')
   assert.deepEqual(checkPilotBundle({ webDir: ok, product: licensed, version: VERSION }), [])
+  const manifestOnly = { ...p, media: { manifest } }
+  assert.deepEqual(validateProduct(manifestOnly), [])
+  assert.deepEqual(checkPilotBundle({ webDir: ok, product: manifestOnly, version: VERSION }), [])
   write(ok, 'exercise-media/still/0002.webp', 'unlisted')
   assert.ok(checkPilotBundle({ webDir: ok, product: licensed, version: VERSION }).some(e => /not in the licensed manifest/.test(e)))
   write(ok, 'exercise-media/still/0001.webp', 'changed bytes')
