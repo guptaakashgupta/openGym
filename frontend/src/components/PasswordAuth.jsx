@@ -180,7 +180,8 @@ export function PasswordRegisterForm({ close, inviteOnly, name, setName, code, s
     try {
       const u = await passwordRegister(n, pw, code.trim(), mail)
       const st = useStore.getState()
-      st.setUser(u); close(); openConnect(code)
+      st.setUser(u)
+      await openConnect(code, { close, refreshConfig: st.refreshConfig })
       if (hasData(useStore.getState().S)) { await st.pushState(); toast(t('Profile created, and this device’s data moved into it')) }
       else { await st.pullState(); toast(t('Welcome, {0}', u.name)) }
     } catch (e) { setErr(passwordError(e)) }

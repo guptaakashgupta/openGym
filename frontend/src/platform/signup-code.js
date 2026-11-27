@@ -2,6 +2,7 @@
 // section 3). The code gets the account made; consent stays on the connect screen, which opens next
 // with the code filled in. Nothing here connects or joins.
 import { PRODUCT } from './config.js'
+import { closeThenNav } from '../lib/nav.js'
 
 const CONNECT = '#/settings/trainer'
 
@@ -14,7 +15,10 @@ export function codeFromHash(hash) {
 export const initialSignupCode = () => (PRODUCT ? codeFromHash(location.hash) : '')
 
 /** After the account is made: the connect screen, where the member confirms what to share. */
-export function openConnect(code) {
+export async function openConnect(code, { close, refreshConfig }) {
   const c = String(code || '').trim()
-  if (PRODUCT && c) location.hash = `${CONNECT}?code=${encodeURIComponent(c)}`
+  if (!PRODUCT || !c) return close()
+  // Trainer settings are hidden until the signed-in configuration arrives.
+  await refreshConfig()
+  closeThenNav(close, `${CONNECT.slice(1)}?code=${encodeURIComponent(c)}`)
 }

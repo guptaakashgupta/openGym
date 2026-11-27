@@ -18,7 +18,7 @@ import { openLostAccess } from '../components/LostAccess.jsx'
 import { oidcOn, oidcOnly, oidcLabel, startWebSignIn, oidcArrival, clearOidcArrival, oidcErrorText } from '../lib/oidc.js'
 
 function RegisterSheet({ close }) {
-  const { setUser, pushState, pullState, loadConfig } = useStore()
+  const { setUser, pushState, pullState, loadConfig, refreshConfig } = useStore()
   const config = useStore(s => s.config)
   const [name, setName] = useState('')
   const [code, setCode] = useState(initialSignupCode)
@@ -38,7 +38,8 @@ function RegisterSheet({ close }) {
     if (inviteOnly && !code.trim()) { useUI.getState().toast(t('An invite code is required')); return }
     try {
       const u = await passkeyRegister(n, code.trim())
-      setUser(u); close(); openConnect(code)
+      setUser(u)
+      await openConnect(code, { close, refreshConfig })
       if (hasData(useStore.getState().S)) { await pushState(); useUI.getState().toast(t('Profile created, and this device’s data moved into it')) }
       else { await pullState(); useUI.getState().toast(t('Welcome, {0}', u.name)) }
     } catch (e) { if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') useUI.getState().toast(passkeyError(e, t('Registration failed'))) }
