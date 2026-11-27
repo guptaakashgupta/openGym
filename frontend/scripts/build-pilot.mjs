@@ -50,6 +50,7 @@ const mediaEnv = mediaMode === 'placeholder'
 run(process.execPath, [path.join(FRONTEND, 'node_modules/vite/bin/vite.js'), 'build', '--outDir', out, '--emptyOutDir'], {
   VITE_PILOT: '1', VITE_PILOT_SERVER: product.server, ...(mobile ? { VITE_MOBILE: '1' } : {}), ...mediaEnv,
   VITE_PILOT_NAME: product.productName, ...(iconFile ? { VITE_PILOT_ICON: 'icon-180.png' } : {}),
+  VITE_PILOT_SOURCE: product.source.offerUrl.replace('{version}', version),
 })
 if (mediaMode === 'licensed') run(process.execPath, [path.join(FRONTEND, '../scripts/catalogue/stage-media.mjs'), out, '--manifest', product.media.manifest])
 

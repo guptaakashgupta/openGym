@@ -239,3 +239,18 @@ describe('English-name switches with every exercise-name pack', () => {
     _setLangState('en', {}, null, null)
   })
 })
+
+describe('_setBrand', () => {
+  it('shows the product name for openGym but keeps folder paths', async () => {
+    const { _setBrand, tn } = await import('./i18n-core.js')
+    _setBrand('Pilot Gym')
+    try {
+      expect(t('Support openGym')).toBe('Support Pilot Gym')
+      expect(t('to install openGym as a full-screen app.')).toBe('to install Pilot Gym as a full-screen app.')
+      expect(t('DOCUMENTS/openGym/')).toBe('DOCUMENTS/openGym/')
+      expect(t('openGym/opengym-backup-latest.json')).toBe('openGym/opengym-backup-latest.json')
+      expect(tn('{0} openGym set', '{0} openGym sets', 2)).toBe('2 Pilot Gym sets')
+    } finally { _setBrand(null) }
+    expect(t('Support openGym')).toBe('Support openGym')
+  })
+})

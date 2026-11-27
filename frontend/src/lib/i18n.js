@@ -7,8 +7,11 @@ import { useSyncExternalStore } from 'react'
 import {
   LANGS, INSTR_LANGS, EXERCISE_NAME_LANGS, DATE_LOCALES, DERIVED_LOCALES, RTL_LANGS,
   getLang, dateLocale, t, tn, instrFor, exerciseNameFor, exerciseNameSearchText, getVersion,
-  baseLang, derivePack, _setLangState, exerciseNameClass, exerciseOwnName, exerciseOwnNameClass, exerciseAsTypedClass, descFor, instrTranslated, _setDetailsLoader, _setDetails, _detailsFailed
+  baseLang, derivePack, _setLangState, exerciseNameClass, exerciseOwnName, exerciseOwnNameClass, exerciseAsTypedClass, descFor, instrTranslated, _setDetailsLoader, _setDetails, _detailsFailed, _setBrand
 } from './i18n-core.js'
+import { PRODUCT, PRODUCT_NAME } from '../platform/config.js'
+
+if (PRODUCT) _setBrand(PRODUCT_NAME)
 
 export {
   LANGS, INSTR_LANGS, EXERCISE_NAME_LANGS, DATE_LOCALES, DERIVED_LOCALES, RTL_LANGS,

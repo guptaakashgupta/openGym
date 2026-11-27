@@ -49,7 +49,7 @@ import { api, webauthnOK, passkeyRegister, passkeyError, IS_ANDROID } from '../l
 import { pushSupported, enablePush, disablePush, sendTestPush, syncPushSubscription } from '../lib/push.js'
 import { wakeLockSupported } from '../lib/wakelock.js'
 import { t, tn, LANGS, INSTR_LANGS, EXERCISE_NAME_LANGS, baseLang, dateLocale } from '../lib/i18n.js'
-import { PRODUCT, PRODUCT_NAME } from '../platform/config.js'
+import { PRODUCT, PRODUCT_NAME, PILOT_SOURCE } from '../platform/config.js'
 import { nameIn, said } from '../lib/a11y-name.js'
 import { effectiveLang } from '../lib/default-lang.js'
 import { DEMO, REPO } from '../lib/demo.js'
@@ -1323,7 +1323,8 @@ export default function Settings({ page = null, find = null, via = null, entryKe
           shows only its rating link: Play's payments policy wants Play billing for anything paid
           inside an app, donations to a project that isn't a registered charity included, so the
           coffee links stay on the APK, the iPhone and the web (docs/APP_STORES.md). */}
-      <Section title={t('Support openGym')} footer={play ? undefined : t('openGym is free: no ads, no subscriptions, no tracking. A coffee keeps it that way.')}>
+      {/* The pilot product build: upstream's donation links are not the product's to show. */}
+      {!PRODUCT && <Section title={t('Support openGym')} footer={play ? undefined : t('openGym is free: no ads, no subscriptions, no tracking. A coffee keeps it that way.')}>
         {MOBILE && ios && <Row icon="star" iconTint="var(--orange)" title={t('Rate openGym on the App Store')} accessory="chevron"
           onClick={() => window.open('https://apps.apple.com/app/id6822275400?action=write-review', '_blank', 'noopener')} />}
         {play && <Row icon="star" iconTint="var(--orange)" title={t('Rate openGym on Google Play')} accessory="chevron"
@@ -1336,7 +1337,7 @@ export default function Settings({ page = null, find = null, via = null, entryKe
           <Row icon="heart" iconTint="var(--purple)" title="GitHub Sponsors" accessory="chevron"
             onClick={() => window.open('https://github.com/sponsors/DuarteSantos8', '_blank', 'noopener')} />
         </>}
-      </Section>
+      </Section>}
       {/* "Add to Home screen": not inside the phone app, and not once it is installed. Safari's
           Share menu only on Apple (an iPad says Macintosh too); Windows and Linux get Chrome's
           install icon instead of an iPhone tip. */}
@@ -1349,8 +1350,8 @@ export default function Settings({ page = null, find = null, via = null, entryKe
           build there is no address bar and no about box, so without this there is no way to tell
           which build you are running, or whether an update actually installed. */}
       <div className="dim small sp-version">
-        openGym v{__APP_VERSION__} · {t('free & open source (AGPL v3)')}<br />
-        <a href="https://github.com/DuarteSantos8/openGym" target="_blank" rel="noopener"><span>{t('Source code')}</span></a><br />
+        {PRODUCT_NAME} v{__APP_VERSION__} · {t('free & open source (AGPL v3)')}<br />
+        <a href={(PRODUCT && PILOT_SOURCE) || 'https://github.com/DuarteSantos8/openGym'} target="_blank" rel="noopener"><span>{t('Source code')}</span></a><br />
         {/* Attribution the media licence asks for word for word (agreement §8c), so it is not translated.
             The spans keep each link's words above its neighbours' 44 px tap targets (index.css). */}
         Exercise media © Aliaksandr Makatserchyk, <a href="https://gymvisual.com/" target="_blank" rel="noopener"><span>Gym visual</span></a>, gymvisual.com.

@@ -3,6 +3,8 @@
 export const PRODUCT = import.meta.env.VITE_PILOT === '1'
 export const PRODUCT_NAME = import.meta.env.VITE_PILOT_NAME || 'openGym'
 export const PRODUCT_ICON = import.meta.env.VITE_PILOT_ICON || null
+// This version's source offer (AGPL §13), the product file's source.offerUrl.
+export const PILOT_SOURCE = import.meta.env.VITE_PILOT_SOURCE || null
 
 // The one service the product phone app pairs with, fixed at build time (VITE_PILOT_SERVER): an
 // HTTPS origin, or null when the build carries none or something else — then nothing pairs.

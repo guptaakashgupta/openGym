@@ -81,6 +81,12 @@ export const getLang = () => lang
 export const dateLocale = () => DATE_LOCALES[lang] || 'en-GB'
 export const getVersion = () => version
 
+// The pilot product build shows its own name wherever a string says openGym (set by i18n.js).
+// Folder paths such as Documents/openGym are real names on disk, so they stay.
+let brand = null
+export const _setBrand = name => { brand = name || null }
+const branded = v => (brand ? v.replace(/(?<![\w/])openGym(?![\w/])/g, brand) : v)
+
 // Translate a source string; {0},{1}… are replaced with args (also on the English fallback).
 export function t(s, ...args) {
   let v = dict[s] || s
@@ -90,6 +96,7 @@ export function t(s, ...args) {
     const forms = v
     v = (typeof args[0] === 'number' && forms[pluralCategory(args[0])]) || forms.other || forms.many || forms.one || s
   }
+  v = branded(v)
   for (let i = 0; i < args.length; i++) v = v.replaceAll('{' + i + '}', args[i])
   return v
 }
@@ -125,7 +132,7 @@ export function tn(one, other, n, ...rest) {
   if (forms && typeof forms === 'object') {
     const form = forms[pluralCategory(n)] || forms.other || forms.many || forms.one
     if (form) {
-      let v = form
+      let v = branded(form)
       const args = [n, ...rest]
       for (let i = 0; i < args.length; i++) v = v.replaceAll('{' + i + '}', args[i])
       return v
@@ -142,6 +149,7 @@ export function tnf(one, other, n, shown, ...rest) {
   const forms = dict[other]
   let v = forms && typeof forms === 'object' ? (forms[pluralCategory(n)] || forms.other || forms.many || forms.one) : null
   if (!v) v = (n === 1 ? dict[one] : (typeof forms === 'string' ? forms : null)) || (n === 1 ? one : other)
+  v = branded(v)
   const args = [shown, ...rest]
   for (let i = 0; i < args.length; i++) v = v.replaceAll('{' + i + '}', args[i])
   return v
